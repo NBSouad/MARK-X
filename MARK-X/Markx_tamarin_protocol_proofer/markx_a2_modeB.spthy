@@ -1,0 +1,284 @@
+/*
+ * MARK-X: Migration-Aware Authenticated Re-Key Exchange
+ * Tamarin model for symbolic protocol verification
+ *
+ * Scope:
+ *   - Variant A2 (explicit ECDH).
+ *   - Mode B (chain bootstrap): epoch e0+1 is bootstrapped with a MAC
+ *     under K_chain established at epoch e0.
+ *   - The Mode A epoch (e0) that established K_chain is *abstracted*
+ *     by a single setup rule SetupChainState. This is the standard
+ *     Tamarin idiom for chained / ratcheted protocols (e.g. the
+ *     Signal X3DH model) and matches KDF's input assumption that
+ *     the prior epoch was already established under Theorem 6.1.
+ *     Composing the full Mode A unrolling with Mode B causes the
+ *     autoprover to fail to terminate on basic lemmas because the
+ *     source-saturation procedure cannot bound the chain depth even
+ *     with -c=30; see the README for a discussion of this limitation
+ *     and how interactive composition would be done.
+ *
+ * Difference from markx_a2_modeA.spthy:
+ *   - The prior-epoch state is created by a single SetupChainState
+ *     rule that produces !ChainKey($S, $C, ~kchain) facts.
+ *   - Server_Phase1_ChainBoot consumes !ChainKey and uses
+ *     mac(kchain, <'MARK-X-v2-ChainBoot', ctx_1>) for authentication.
+ *   - Client_Phase1_ChainBoot verifies with the same kchain.
+ *   - Phases 2, 3, 3' are identical to markx_a2_modeA.spthy.
+ *   - A new Reveal_Kchain oracle.
+ *
+ * Property catalogue (STABLE by default):
+ *
+ *   sanity_executable        -- a chained-epoch transition completes
+ *                               (exists-trace).
+ *   policy_compliance        -- client only accepts policy-compliant ctx_1.
+ *   chain_auth               -- client acceptance of a chained
+ *                               m_1 implies a matching server chain step or
+ *                               a prior K_chain reveal.
+ *   secrecy_ktrans           -- K_trans secret under chain-fresh A2 conditions.
+ *   secrecy_ktrans_one_leak  -- A2 leakage-resilient secrecy in chained epoch.
+ *
+ * Usage:
+ *   tamarin-prover --derivcheck-timeout=0 --prove markx_a2_modeB.spthy
+ */
+
+theory MARK_X_A2_ModeB
+begin
+
+builtins: hashing, signing, diffie-hellman
+
+functions: pk_kem/1
+functions: kemEnc/3, kemDec/2
+functions: mac/2
+
+equations: kemDec(kemEnc(K, pk_kem(s), r), s) = K
+
+/* ------------------------------------------------------------------ *
+ * Setup
+ *
+ * SetupChainState abstracts the Mode A epoch e0: it generates a fresh
+ * ~kchain that both the server and client have stored. The persistent
+ * fact !ChainKey($S, $C, ~kchain) binds it to the (server, client)
+ * pair so that Server_Phase1_ChainBoot and Client_Phase1_ChainBoot
+ * agree on the same key.
+ *
+ * In a real deployment ~kchain would be the output of the Mode A
+ * epoch's K_chain derivation (markx_a2_modeA.spthy proves this is
+ * secret under A2-fresh conditions); we abstract that composition
+ * here for autoproof tractability.
+ * ------------------------------------------------------------------ */
+
+rule SetupPolicy:
+    [ Fr(~policy) ]
+  --[ PolicyInstalled($S, $C, ~policy) ]->
+    [ !ServerPolicy($S, ~policy)
+    , !ClientLocalPolicy($C, ~policy) ]
+
+rule SetupChainState:
+    [ Fr(~kchain), Fr(~sid_prev_s), Fr(~sid_prev_c) ]
+  --[ ChainStateInstalled($S, $C, ~kchain) ]->
+    [ !ChainKeyServer($S, ~sid_prev_s, ~kchain)
+    , !ChainKeyClient($C, $S, ~sid_prev_c, ~kchain) ]
+
+/* ------------------------------------------------------------------ *
+ * Corruption oracles
+ * ------------------------------------------------------------------ */
+
+rule Corrupt_KEM:
+    [ !KemSk(sid, $S, kemSk) ]
+  --[ CorruptKEM(sid, $S) ]->
+    [ Out(kemSk) ]
+
+rule Corrupt_ServerEph:
+    [ !ServerEph(sid, $S, skeph) ]
+  --[ CorruptServerEph(sid, $S) ]->
+    [ Out(skeph) ]
+
+rule Corrupt_ClientEph:
+    [ !ClientEph(sid, $C, x) ]
+  --[ CorruptClientEph(sid, $C) ]->
+    [ Out(x) ]
+
+rule Reveal_Ktrans:
+    [ !KtransOf(sid, ktrans) ]
+  --[ RevealKtrans(sid) ]->
+    [ Out(ktrans) ]
+
+// Mode-B specific: leak the chain key used to authenticate the chained
+// epoch's bootstrap.
+rule Reveal_Kchain_Server:
+    [ !ChainKeyServer($S, sid_prev, kchain) ]
+  --[ RevealKchain(sid_prev) ]->
+    [ Out(kchain) ]
+
+/* ------------------------------------------------------------------ *
+ * Chained epoch e0+1: Mode-B bootstrap (MAC under K_chain)
+ * ------------------------------------------------------------------ */
+
+rule Server_Phase1_ChainBoot:
+    let pkpq    = pk_kem(~skpq)
+        ctx1    = <pkpq, $algId, $paramId, $e, $ctr, h(~policy), 'A2', 'modeB', 'g'^~skeph>
+        mac1    = mac(kchain, <'MARK-X-v2-ChainBoot', ctx1>)
+        m1      = <ctx1, mac1>
+    in
+    [ Fr(~sid), Fr(~skpq), Fr(~skeph)
+    , !ChainKeyServer($S, sid_prev, kchain)
+    , !ServerPolicy($S, ~policy) ]
+  --[ ServerSentM1Chain(~sid, $S, sid_prev, $algId, $paramId, $e, $ctr, h(~policy), pkpq, 'g'^~skeph)
+    , ServerChainStep(~sid, $S, sid_prev) ]->
+    [ Out(m1)
+    , !KemSk(~sid, $S, ~skpq)
+    , !ServerEph(~sid, $S, ~skeph)
+    , St_Server_1(~sid, $S, sid_prev, ~skpq, ~skeph, ~policy, $algId, $paramId, $e, $ctr, kchain)
+    ]
+
+rule Client_Phase1_ChainBoot:
+    let ctx1 = <pkpq, algId, paramId, e, ctr, policyHash, variantTag, modeTag, pkeph>
+        m1   = <ctx1, mac1>
+    in
+    [ In(m1)
+    , !ClientLocalPolicy($C, ~policy)
+    , !ChainKeyClient($C, $S, sid_prev_c, kchain)
+    , Fr(~sid_c), Fr(~x) ]
+  --[ Eq(mac1, mac(kchain, <'MARK-X-v2-ChainBoot', ctx1>))
+    , Eq(policyHash, h(~policy))
+    , Eq(variantTag, 'A2')
+    , Eq(modeTag, 'modeB')
+    , ClientReceivedM1Chain(~sid_c, $C, $S, sid_prev_c, algId, paramId, e, ctr, policyHash, pkpq, pkeph)
+    , ClientChecksPolicy($C, h(~policy))
+    , ClientChainStep(~sid_c, $C, sid_prev_c) ]->
+    [ St_Client_1(~sid_c, $C, $S, sid_prev_c, ~x, ~policy, algId, paramId, e, ctr, pkpq, pkeph, m1, kchain)
+    , !ClientEph(~sid_c, $C, ~x) ]
+
+/* ------------------------------------------------------------------ *
+ * Phases 2 and 3 (chained epoch)
+ * ------------------------------------------------------------------ */
+
+rule Client_Phase2:
+    let
+        ctpq     = kemEnc(~Kpq, pkpq, ~r)
+        gx       = 'g'^x
+        Kclass   = pkeph^x
+        tr       = h(<m1, ctpq, gx>)
+        k1       = h(<~Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+        tag1     = mac(k1, <'client-confirm', tr>)
+    in
+    [ St_Client_1(sid_c, $C, $S, sid_prev_c, x, policy, algId, paramId, e, ctr, pkpq, pkeph, m1, kchain)
+    , Fr(~r), Fr(~Kpq) ]
+  --[ ClientSentM2(sid_c, $C, $S, ctpq, gx, tag1)
+    , ClientHasKpq(sid_c, $C, ~Kpq) ]->
+    [ Out(<ctpq, gx, tag1>)
+    , St_Client_2(sid_c, $C, $S, sid_prev_c, x, policy, algId, paramId, e, ctr, pkpq, pkeph, m1,
+                  ctpq, gx, ~Kpq, Kclass, tr) ]
+
+rule Server_Phase2:
+    let
+        ctx1   = <pk_kem(skpq), algId, paramId, e, ctr, h(policy), 'A2', 'modeB', 'g'^skeph>
+        mac1   = mac(kchain, <'MARK-X-v2-ChainBoot', ctx1>)
+        m1     = <ctx1, mac1>
+        Kpq    = kemDec(ctpq, skpq)
+        Kclass = gx^skeph
+        tr     = h(<m1, ctpq, gx>)
+        k1     = h(<Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+    in
+    [ In(<ctpq, gx, tag1>)
+    , St_Server_1(sid, $S, sid_prev, skpq, skeph, policy, algId, paramId, e, ctr, kchain)
+    ]
+  --[ Eq(tag1, mac(k1, <'client-confirm', tr>))
+    , ServerVerifiedM2(sid, $S, ctpq, gx, tag1)
+    , ServerHasKpq(sid, $S, Kpq)
+    ]->
+    [ St_Server_2(sid, $S, sid_prev, skpq, skeph, policy, algId, paramId, e, ctr,
+                  ctpq, gx, Kpq, Kclass, tr) ]
+
+rule Server_Phase3:
+    let
+        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
+        Kchain_new = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
+        tag2   = mac(Ktrans, <'promote-to-PQ', e, ctr, algId, h(policy)>)
+        m3     = <'promote-to-PQ', e, ctr, tag2>
+    in
+    [ St_Server_2(sid, $S, sid_prev, skpq, skeph, policy, algId, paramId, e, ctr,
+                  ctpq, gx, Kpq, Kclass, tr) ]
+  --[ ServerCommits(sid, $S, e, ctr, algId, paramId, h(policy), pk_kem(skpq))
+    , ServerKtrans(sid, $S, Ktrans)
+    , ServerKchain(sid, $S, Kchain_new)
+    ]->
+    [ Out(m3)
+    , !KtransOf(sid, Ktrans) ]
+
+rule Client_Phase3:
+    let
+        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
+        Kchain_new = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
+        m3     = <'promote-to-PQ', e_recv, ctr_recv, tag2>
+    in
+    [ St_Client_2(sid_c, $C, $S, sid_prev_c, x, policy, algId, paramId, e, ctr, pkpq, pkeph, m1,
+                  ctpq, gx, Kpq, Kclass, tr)
+    , In(m3) ]
+  --[ Eq(tag2, mac(Ktrans, <'promote-to-PQ', e_recv, ctr_recv, algId, h(policy)>))
+    , Eq(e_recv, e)
+    , Eq(ctr_recv, ctr)
+    , ClientAccepts(sid_c, $C, $S, e, ctr, algId, paramId, h(policy), pkpq)
+    , ClientKtrans(sid_c, $C, Ktrans)
+    , ClientKchain(sid_c, $C, Kchain_new)
+    ]->
+    [ !KtransOf(sid_c, Ktrans) ]
+
+/* ------------------------------------------------------------------ *
+ * Restrictions
+ * ------------------------------------------------------------------ */
+
+restriction Equality:
+    "All x y #i. Eq(x, y) @ #i ==> x = y"
+
+/* ------------------------------------------------------------------ *
+ * Lemmas
+ * ------------------------------------------------------------------ */
+
+lemma sanity_executable:
+  exists-trace
+    " Ex sid_c C S e ctr alg param ph pkpq #i.
+        ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i "
+
+lemma policy_compliance:
+    " All sid_c C S e ctr alg param ph pkpq #i.
+        ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        ==>
+        Ex #j. ClientChecksPolicy(C, ph) @ #j & #j < #i "
+
+// chain-bootstrap authenticity.
+// If a client accepts a chained-epoch m_1, then either an honest
+// server performed the matching chain step, or the prior K_chain
+// was revealed.
+lemma chain_auth:
+    " All sid_c C sid_prev_c #i.
+        ClientChainStep(sid_c, C, sid_prev_c) @ #i
+        & not (Ex sid #r. RevealKchain(sid) @ #r & #r < #i)
+        ==>
+        Ex sid_s S sid_prev_s #j.
+            ServerChainStep(sid_s, S, sid_prev_s) @ #j
+            & #j < #i "
+
+lemma secrecy_ktrans:
+    " All sid_c C S e ctr alg param ph pkpq ktrans #i.
+        ClientKtrans(sid_c, C, ktrans) @ #i
+        & ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        & not (Ex sid_s #r. CorruptKEM(sid_s, S) @ #r)
+        & not (Ex sid_s #r. CorruptServerEph(sid_s, S) @ #r)
+        & not (Ex #r. CorruptClientEph(sid_c, C) @ #r)
+        & not (Ex sid #r. RevealKtrans(sid) @ #r)
+        & not (Ex sid #r. RevealKchain(sid) @ #r)
+        ==> not (Ex #k. K(ktrans) @ #k) "
+
+lemma secrecy_ktrans_one_leak:
+    " All sid_c C S e ctr alg param ph pkpq ktrans #i.
+        ClientKtrans(sid_c, C, ktrans) @ #i
+        & ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        & not (Ex sid_s #r. CorruptKEM(sid_s, S) @ #r)
+        & not ((Ex sid_s #r. CorruptServerEph(sid_s, S) @ #r)
+               & (Ex #r. CorruptClientEph(sid_c, C) @ #r))
+        & not (Ex sid #r. RevealKtrans(sid) @ #r)
+        & not (Ex sid #r. RevealKchain(sid) @ #r)
+        ==> not (Ex #k. K(ktrans) @ #k) "
+
+end

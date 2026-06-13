@@ -1,0 +1,129 @@
+/*
+ * MARK-X: Migration-Aware Authenticated Re-Key Exchange
+ * Tamarin model -- shared core (reference)
+ *
+ * This file contains the infrastructure that is identical across the
+ * four variant files:
+ *
+ *   markx_a1_modeA.spthy
+ *   markx_a2_modeA.spthy
+ *   markx_a1_modeB.spthy
+ *   markx_a2_modeB.spthy
+ *
+ * Concretely: the function/equation signature, the setup rules for
+ * the long-term signing key and the trusted policy, the corruption
+ * oracles that are common to every variant (sig key, KEM secret,
+ * K_trans reveal), and the Eq restriction.
+ *
+ * This file has NO protocol rules and is NOT a verification artifact
+ * on its own. It is provided so a reader can audit "what is shared"
+ * in one place, without diffing four files. The single sanity lemma
+ * below confirms the theory parses, the function signature is
+ * consistent, and the corruption oracles can fire.
+ *
+ * Usage:
+ *   tamarin-prover --derivcheck-timeout=0 --prove markx_core.spthy
+ *
+ *   Expected output:
+ *     core_sanity (exists-trace): verified
+ */
+
+theory MARK_X_Core
+begin
+
+builtins: hashing, signing
+
+/* ------------------------------------------------------------------ *
+ * Function signature
+ *
+ * All four variants share this signature. Variants A2 (ECDH) also
+ * import the `diffie-hellman` builtin in their own file -- it is not
+ * imported here because it is not used by every variant.
+ *
+ * KEM:  pk_kem(s) is the KEM public key from secret seed s.
+ *       kemEnc(K, pk, r) is the ciphertext encapsulating shared secret
+ *       K under pk with randomness r.
+ *       kemDec(ct, s) is decapsulation; recovers K when ct is honest.
+ * MAC:  mac(k, m) is the tag; verification is by equality test.
+ * ------------------------------------------------------------------ */
+
+functions: pk_kem/1
+functions: kemEnc/3, kemDec/2
+functions: mac/2
+
+equations: kemDec(kemEnc(K, pk_kem(s), r), s) = K
+
+/* ------------------------------------------------------------------ *
+ * Setup rules common to all variants
+ * ------------------------------------------------------------------ */
+
+// Server long-term classical signing key.
+rule SetupServerSig:
+    [ Fr(~sksig) ]
+  --[ ServerSigSetup($S, ~sksig) ]->
+    [ !LtkSig($S, ~sksig)
+    , !PkSig($S, pk(~sksig))
+    , Out(pk(~sksig)) ]
+
+// Server-client trusted local policy.
+rule SetupPolicy:
+    [ Fr(~policy) ]
+  --[ PolicyInstalled($S, $C, ~policy) ]->
+    [ !ServerPolicy($S, ~policy)
+    , !ClientLocalPolicy($C, ~policy) ]
+
+// Pairs the client to a particular server's verification key.
+rule SetupClientTrust:
+    [ !PkSig($S, pkS) ]
+  --[ ClientTrusts($C, $S) ]->
+    [ !TrustedServer($C, $S, pkS) ]
+
+/* ------------------------------------------------------------------ *
+ * Corruption oracle common to all variants
+ *
+ * Only Corrupt_SigKey is included here because !LtkSig is produced by
+ * a setup rule that lives in this file. The other corruption oracles
+ *
+ *   - Corrupt_KEM         (consumes !KemSk produced by Server_Phase1)
+ *   - Corrupt_ServerEph   (A2-only; !ServerEph from Server_Phase1)
+ *   - Corrupt_ClientEph   (A2-only; !ClientEph from Client_Phase1)
+ *   - Corrupt_PSK         (A1-only; !PSK from SetupPSK)
+ *   - Reveal_Ktrans       (!KtransOf produced by Phase 3 / 3')
+ *   - Reveal_Kchain       (Mode-B-only; !KchainOf produced by Phase 3 / 3')
+ *
+ * are defined inline in each variant file alongside the protocol
+ * rules that produce the consumed persistent facts. They are not
+ * here because, without those producer rules, they would trigger
+ * a wellformedness warning ("fact occurs on LHS but never on RHS").
+ * ------------------------------------------------------------------ */
+
+rule Corrupt_SigKey:
+    [ !LtkSig($S, sksig) ]
+  --[ CorruptSig($S) ]->
+    [ Out(sksig) ]
+
+/* ------------------------------------------------------------------ *
+ * Restrictions common to all variants
+ * ------------------------------------------------------------------ */
+
+restriction Equality:
+    "All x y #i. Eq(x, y) @ #i ==> x = y"
+
+/* ------------------------------------------------------------------ *
+ * Sanity
+ *
+ * Confirms the core theory parses, the function signature is
+ * well-formed, and that the setup + corruption oracles compose:
+ * there exists a trace in which a server is set up, its signing key
+ * is corrupted, and the adversary learns the leaked key.
+ * ------------------------------------------------------------------ */
+
+lemma core_sanity:
+  exists-trace
+    " Ex S sksig #i #j #k.
+        ServerSigSetup(S, sksig) @ #i
+        & CorruptSig(S) @ #j
+        & K(sksig) @ #k
+        & #i < #j "
+
+end

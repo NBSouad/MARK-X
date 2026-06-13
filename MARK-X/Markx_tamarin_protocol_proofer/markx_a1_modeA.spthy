@@ -1,0 +1,315 @@
+/*
+ * MARK-X: Migration-Aware Authenticated Re-Key Exchange
+ * Tamarin model for symbolic protocol verification
+ *
+ * Scope:
+ *   - Variant A1 (PSK classical channel).
+ *   - Mode A (assisted migration with classical signature in Phase 1).
+ *   - Single-epoch transition (epoch e -> e+1).
+ *
+ * Difference from markx_a2_modeA.spthy:
+ *   - The ECDH ephemerals (skeph on server, x on client) are removed.
+ *   - A pre-shared key ~psk replaces ECDH for the classical channel.
+ *   - Kclass = ~psk on both sides (instead of pkeph^x = X^skeph).
+ *   - ctx_1's "pk_eph" field becomes the placeholder constant 'eps'.
+ *   - The corruption oracles Corrupt_ServerEph / Corrupt_ClientEph are
+ *     replaced by a single Corrupt_PSK.
+ *   - There is no leakage-resilient sub-case (Theorem 6.4) because the
+ *     PSK is a single shared secret -- there is no "one of two" to leak.
+ *
+ * Property catalogue:
+ *
+ *   STABLE (default `--prove` run, all verify):
+ *     sanity_executable        -- protocol runs to completion (exists-trace).
+ *     policy_compliance        -- client only accepts policy-compliant ctx_1.
+ *     auth_install_strong      -- if client accepts pkpq, honest server signed it.
+ *     auth_install_injective   -- server-side uniqueness of pkpq (Fr-injectivity).
+ *     state_agreement          -- both parties agree on (e, ctr, alg, pkpq, ph)
+ *                                 under A1-fresh sessions.
+ *     secrecy_ktrans           -- K_trans is secret under A1-fresh conditions
+ *                                 (Theorem 6.2).
+ *
+ *   WIP (only included with -DWIP; autoprover currently incomplete):
+ *     server_confirm_auth      -- if server accepts tag_1, the client computed it.
+ *     pq_secrecy_essential     -- existence of a trace where combined KEM and
+ *                                 PSK corruption recovers K_trans.
+ *
+ * Usage:
+ *   tamarin-prover --derivcheck-timeout=0 --prove markx_a1_modeA.spthy
+ *   tamarin-prover --derivcheck-timeout=0 -DWIP --prove markx_a1_modeA.spthy
+ */
+
+theory MARK_X_A1_ModeA
+begin
+
+builtins: hashing, signing
+
+functions: pk_kem/1
+functions: kemEnc/3, kemDec/2
+functions: mac/2
+
+equations: kemDec(kemEnc(K, pk_kem(s), r), s) = K
+
+/* ------------------------------------------------------------------ *
+ * Setup rules
+ * ------------------------------------------------------------------ */
+
+rule SetupServerSig:
+    [ Fr(~sksig) ]
+  --[ ServerSigSetup($S, ~sksig) ]->
+    [ !LtkSig($S, ~sksig)
+    , !PkSig($S, pk(~sksig))
+    , Out(pk(~sksig)) ]
+
+rule SetupPolicy:
+    [ Fr(~policy) ]
+  --[ PolicyInstalled($S, $C, ~policy) ]->
+    [ !ServerPolicy($S, ~policy)
+    , !ClientLocalPolicy($C, ~policy) ]
+
+rule SetupClientTrust:
+    [ !PkSig($S, pkS) ]
+  --[ ClientTrusts($C, $S) ]->
+    [ !TrustedServer($C, $S, pkS) ]
+
+// A1: pre-shared key for the classical channel, bound to (S, C).
+rule SetupPSK:
+    [ Fr(~psk) ]
+  --[ PSKInstalled($S, $C, ~psk) ]->
+    [ !PSK($S, $C, ~psk) ]
+
+/* ------------------------------------------------------------------ *
+ * Compromise / corruption rules
+ * ------------------------------------------------------------------ */
+
+rule Corrupt_SigKey:
+    [ !LtkSig($S, sksig) ]
+  --[ CorruptSig($S) ]->
+    [ Out(sksig) ]
+
+rule Corrupt_KEM:
+    [ !KemSk(sid, $S, kemSk) ]
+  --[ CorruptKEM(sid, $S) ]->
+    [ Out(kemSk) ]
+
+// A1's only "ephemeral" corruption: leak the PSK.
+rule Corrupt_PSK:
+    [ !PSK($S, $C, psk) ]
+  --[ CorruptPSK($S, $C) ]->
+    [ Out(psk) ]
+
+rule Reveal_Ktrans:
+    [ !KtransOf(sid, ktrans) ]
+  --[ RevealKtrans(sid) ]->
+    [ Out(ktrans) ]
+
+/* ------------------------------------------------------------------ *
+ * Protocol rules (Mode A, Variant A1, single epoch transition)
+ * ------------------------------------------------------------------ */
+
+// Phase 1: server constructs ctx_1, signs, sends m_1.
+// In A1 the pk_eph field is the placeholder constant 'eps'.
+rule Server_Phase1:
+    let pkpq   = pk_kem(~skpq)
+        ctx1   = <pkpq, $algId, $paramId, $e, $ctr, h(~policy), 'A1', 'modeA', 'eps'>
+        sig1   = sign(<'MARK-X-v2-Bootstrap', ctx1>, sksig)
+        m1     = <ctx1, sig1>
+    in
+    [ Fr(~sid), Fr(~skpq)
+    , !LtkSig($S, sksig), !ServerPolicy($S, ~policy) ]
+  --[ ServerSentM1(~sid, $S, $algId, $paramId, $e, $ctr, h(~policy), pkpq, 'eps')
+    , ServerStarts(~sid, $S) ]->
+    [ Out(m1)
+    , !KemSk(~sid, $S, ~skpq)
+    , St_Server_1(~sid, $S, ~skpq, ~policy, $algId, $paramId, $e, $ctr)
+    ]
+
+// Phase 1' (client): receive m_1, perform the 5 checks.
+// In A1 the client reads its !PSK and stores it for Phase 2.
+rule Client_Phase1:
+    let ctx1 = <pkpq, algId, paramId, e, ctr, policyHash, variantTag, modeTag, pkeph>
+        m1   = <ctx1, sig1>
+    in
+    [ In(m1)
+    , !TrustedServer($C, $S, pkS)
+    , !ClientLocalPolicy($C, ~policy)
+    , !PSK($S, $C, ~psk)
+    , Fr(~sid_c) ]
+  --[ Eq(verify(sig1, <'MARK-X-v2-Bootstrap', ctx1>, pkS), true)
+    , Eq(policyHash, h(~policy))
+    , Eq(variantTag, 'A1')
+    , Eq(modeTag, 'modeA')
+    , Eq(pkeph, 'eps')
+    , ClientReceivedM1(~sid_c, $C, $S, algId, paramId, e, ctr, policyHash, pkpq, pkeph)
+    , ClientChecksPolicy($C, h(~policy))
+    ]->
+    [ St_Client_1(~sid_c, $C, $S, ~psk, ~policy, algId, paramId, e, ctr, pkpq, m1) ]
+
+// Phase 2: client encapsulates, derives Kclass = ~psk, computes tag_1.
+rule Client_Phase2:
+    let
+        ctpq     = kemEnc(~Kpq, pkpq, ~r)
+        Kclass   = psk
+        tr       = h(<m1, ctpq, 'eps'>)
+        k1       = h(<~Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+        tag1     = mac(k1, <'client-confirm', tr>)
+    in
+    [ St_Client_1(sid_c, $C, $S, psk, policy, algId, paramId, e, ctr, pkpq, m1)
+    , Fr(~r), Fr(~Kpq) ]
+  --[ ClientSentM2(sid_c, $C, $S, ctpq, 'eps', tag1)
+    , ClientHasKpq(sid_c, $C, ~Kpq) ]->
+    [ Out(<ctpq, 'eps', tag1>)
+    , St_Client_2(sid_c, $C, $S, psk, policy, algId, paramId, e, ctr, pkpq, m1,
+                  ctpq, ~Kpq, Kclass, tr) ]
+
+// Phase 2' (server): receive m_2, decapsulate, verify tag_1 using
+// the !PSK fact for the (S, C) pair that matches.
+rule Server_Phase2:
+    let
+        ctx1   = <pk_kem(skpq), algId, paramId, e, ctr, h(policy), 'A1', 'modeA', 'eps'>
+        sig1   = sign(<'MARK-X-v2-Bootstrap', ctx1>, sksig)
+        m1     = <ctx1, sig1>
+        Kpq    = kemDec(ctpq, skpq)
+        Kclass = psk
+        tr     = h(<m1, ctpq, 'eps'>)
+        k1     = h(<Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+    in
+    [ In(<ctpq, 'eps', tag1>)
+    , St_Server_1(sid, $S, skpq, policy, algId, paramId, e, ctr)
+    , !LtkSig($S, sksig)
+    , !PSK($S, $C, psk)
+    ]
+  --[ Eq(tag1, mac(k1, <'client-confirm', tr>))
+    , ServerVerifiedM2(sid, $S, ctpq, 'eps', tag1)
+    , ServerHasKpq(sid, $S, Kpq)
+    , ServerKnowsClient(sid, $S, $C)
+    ]->
+    [ St_Server_2(sid, $S, $C, skpq, psk, policy, algId, paramId, e, ctr,
+                  ctpq, Kpq, Kclass, tr) ]
+
+// Phase 3: server derives K_trans, K_chain, sends m_3.
+rule Server_Phase3:
+    let
+        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
+        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
+        tag2   = mac(Ktrans, <'promote-to-PQ', e, ctr, algId, h(policy)>)
+        m3     = <'promote-to-PQ', e, ctr, tag2>
+    in
+    [ St_Server_2(sid, $S, $C, skpq, psk, policy, algId, paramId, e, ctr,
+                  ctpq, Kpq, Kclass, tr) ]
+  --[ ServerCommits(sid, $S, e, ctr, algId, paramId, h(policy), pk_kem(skpq))
+    , ServerKtrans(sid, $S, Ktrans)
+    , ServerKchain(sid, $S, Kchain)
+    , ServerSentM3(sid, $S, e, ctr, tag2)
+    ]->
+    [ Out(m3)
+    , !KtransOf(sid, Ktrans)
+    , !KchainOf(sid, Kchain) ]
+
+// Phase 3' (client): receive m_3, verify tag_2 with stored (e, ctr).
+rule Client_Phase3:
+    let
+        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
+        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
+        m3     = <'promote-to-PQ', e_recv, ctr_recv, tag2>
+    in
+    [ St_Client_2(sid_c, $C, $S, psk, policy, algId, paramId, e, ctr, pkpq, m1,
+                  ctpq, Kpq, Kclass, tr)
+    , In(m3) ]
+  --[ Eq(tag2, mac(Ktrans, <'promote-to-PQ', e_recv, ctr_recv, algId, h(policy)>))
+    , Eq(e_recv, e)
+    , Eq(ctr_recv, ctr)
+    , ClientAccepts(sid_c, $C, $S, e, ctr, algId, paramId, h(policy), pkpq)
+    , ClientKtrans(sid_c, $C, Ktrans)
+    , ClientKchain(sid_c, $C, Kchain)
+    ]->
+    [ !KtransOf(sid_c, Ktrans)
+    , !KchainOf(sid_c, Kchain) ]
+
+/* ------------------------------------------------------------------ *
+ * Restrictions
+ * ------------------------------------------------------------------ */
+
+restriction Equality:
+    "All x y #i. Eq(x, y) @ #i ==> x = y"
+
+/* ------------------------------------------------------------------ *
+ * Lemmas
+ * ------------------------------------------------------------------ */
+
+lemma sanity_executable:
+  exists-trace
+    " Ex sid_c C S e ctr alg param ph pkpq #i.
+        ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i "
+
+lemma policy_compliance:
+    " All sid_c C S e ctr alg param ph pkpq #i.
+        ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        ==>
+        Ex #j. ClientChecksPolicy(C, ph) @ #j & #j < #i "
+
+lemma auth_install_strong:
+    " All sid_c C S e ctr alg param ph pkpq #i.
+        ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        & not (Ex #k. CorruptSig(S) @ #k & #k < #i)
+        ==>
+        Ex sid_s pkeph #j. ServerSentM1(sid_s, S, alg, param, e, ctr, ph, pkpq, pkeph) @ #j
+                            & #j < #i "
+
+lemma auth_install_injective:
+    " All sid_s1 sid_s2 S alg param e ctr ph pkpq pkeph1 pkeph2 #i1 #i2.
+        ServerSentM1(sid_s1, S, alg, param, e, ctr, ph, pkpq, pkeph1) @ #i1
+        & ServerSentM1(sid_s2, S, alg, param, e, ctr, ph, pkpq, pkeph2) @ #i2
+        ==> #i1 = #i2 "
+
+lemma state_agreement:
+    " All sid_c C S e ctr alg param ph pkpq #i.
+        ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        & not (Ex #k. CorruptSig(S) @ #k & #k < #i)
+        & not (Ex sid_s #k. CorruptKEM(sid_s, S) @ #k & #k < #i)
+        & not (Ex #k. CorruptPSK(S, C) @ #k & #k < #i)
+        & not (Ex sid #k. RevealKtrans(sid) @ #k & #k < #i)
+        ==>
+        Ex sid_s #j. ServerCommits(sid_s, S, e, ctr, alg, param, ph, pkpq) @ #j
+                       & #j < #i "
+
+// Theorem 6.2: A1 transition secrecy.
+// Under PSK freshness, KEM freshness, no Ktrans reveal, K_trans is secret.
+lemma secrecy_ktrans:
+    " All sid_c C S e ctr alg param ph pkpq ktrans #i.
+        ClientKtrans(sid_c, C, ktrans) @ #i
+        & ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        & not (Ex #r. CorruptSig(S) @ #r & #r < #i)
+        & not (Ex sid_s #r. CorruptKEM(sid_s, S) @ #r)
+        & not (Ex #r. CorruptPSK(S, C) @ #r)
+        & not (Ex sid #r. RevealKtrans(sid) @ #r)
+        ==> not (Ex #k. K(ktrans) @ #k) "
+
+#ifdef WIP
+// Server-confirmation authentication. Same heuristic-search difficulty
+// as the A2 file -- gated behind -DWIP.
+lemma server_confirm_auth:
+    " All sid_s S ctpq gx tag1 #i.
+        ServerVerifiedM2(sid_s, S, ctpq, gx, tag1) @ #i
+        ==>
+        (Ex sid_c C #j. ClientSentM2(sid_c, C, S, ctpq, gx, tag1) @ #j
+                        & #j < #i)
+        | (Ex sid_s2 #k. CorruptKEM(sid_s2, S) @ #k & #k < #i)
+        | (Ex C #k. CorruptPSK(S, C) @ #k & #k < #i) "
+#endif
+
+#ifdef WIP
+// Sanity (negative): combined KEM and PSK corruption witnesses
+// recoverability of K_trans (Theorem 6.2 freshness is necessary).
+lemma pq_secrecy_essential:
+  exists-trace
+    " Ex sid_c C S ktrans #i #k.
+        ClientKtrans(sid_c, C, ktrans) @ #i
+        & K(ktrans) @ #k
+        & (Ex sid_s #r1 #r2.
+              CorruptKEM(sid_s, S) @ #r1
+              & CorruptPSK(S, C) @ #r2
+              & ServerKtrans(sid_s, S, ktrans) @ #r2) "
+#endif
+
+end

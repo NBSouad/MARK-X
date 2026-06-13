@@ -1,0 +1,14 @@
+/Users/nene/Documents/Claude/Projects/MARK-X/markx_tls_integration/target/debug/deps/serde-381a9fdd68280c67.d: /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/nene/Documents/Claude/Projects/MARK-X/markx_tls_integration/target/debug/build/serde-be9f438f40e414fe/out/private.rs
+
+/Users/nene/Documents/Claude/Projects/MARK-X/markx_tls_integration/target/debug/deps/libserde-381a9fdd68280c67.rlib: /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/nene/Documents/Claude/Projects/MARK-X/markx_tls_integration/target/debug/build/serde-be9f438f40e414fe/out/private.rs
+
+/Users/nene/Documents/Claude/Projects/MARK-X/markx_tls_integration/target/debug/deps/libserde-381a9fdd68280c67.rmeta: /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/nene/Documents/Claude/Projects/MARK-X/markx_tls_integration/target/debug/build/serde-be9f438f40e414fe/out/private.rs
+
+/Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/nene/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/nene/Documents/Claude/Projects/MARK-X/markx_tls_integration/target/debug/build/serde-be9f438f40e414fe/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/nene/Documents/Claude/Projects/MARK-X/markx_tls_integration/target/debug/build/serde-be9f438f40e414fe/out

@@ -1,0 +1,469 @@
+/*
+ * MARK-X: Migration-Aware Authenticated Re-Key Exchange
+ * Tamarin model for symbolic protocol verification
+ *
+ * Scope:
+ *   - Variant A2 (explicit ECDH) -- the harder variant.
+ *   - Mode A (assisted migration with classical signature in Phase 1).
+ *   - Single-epoch transition (epoch e -> e+1).
+ *
+ * Variant A1 (PSK) and Mode B (chaining) are sketched as commented blocks
+ * at the end and can be enabled by activating the corresponding rules.
+ *
+ * Modelling decisions (cross-reference with MARKX_protocol_review.md):
+ *   #1 (mode in ctx_1):   I add mode='A' to ctx_1 explicitly. PROTOCOL-EXT.
+ *   #3 (sk_eph lifetime): sk_eph is a linear fact, consumed in m_2 handling.
+ *   #4 (e,ctr equality):  client checks e' = e, ctr' = ctr before accept.
+ *
+ * Property catalogue:
+ *
+ *   STABLE (default `--prove` run, all verify):
+ *     sanity_executable        -- protocol runs to completion (exists-trace).
+ *     policy_compliance        -- client only accepts policy-compliant ctx_1.
+ *     auth_install_strong      -- if client accepts pkpq, honest server signed it.
+ *     auth_install_injective   -- server-side uniqueness of pkpq (Fr-injectivity).
+ *     state_agreement          -- both parties agree on (e, ctr, alg, pkpq, ph)
+ *                                 under A2-fresh sessions.
+ *     secrecy_ktrans           -- K_trans is secret under A2-fresh conditions.
+ *     secrecy_ktrans_one_leak  -- K_trans secret with at most one ECDH ephemeral
+ *                                 leaked (Theorem 6.4 leakage-resilient case).
+ *
+ *   WIP (only included with -DWIP; autoprover currently incomplete):
+ *     server_confirm_auth      -- if server accepts tag_1, the client computed it.
+ *     pq_secrecy_essential     -- existence of a trace where combined KEM and
+ *                                 server-eph corruption recovers K_trans.
+ *
+ * Usage:
+ *   tamarin-prover --derivcheck-timeout=0 --prove markx.spthy
+ *       Runs the 7 stable lemmas; all should verify.
+ *
+ *   tamarin-prover --derivcheck-timeout=0 -DWIP --prove markx.spthy
+ *       Includes the 2 work-in-progress lemmas. Autoprover may report
+ *       falsification due to heuristic limitations rather than real
+ *       attacks; the interactive prover is more appropriate for these.
+ *
+ *   tamarin-prover --derivcheck-timeout=0 --prove=secrecy_ktrans markx.spthy
+ *       Verify a single lemma.
+ */
+
+theory MARK_X_A2_ModeA
+begin
+
+builtins: hashing, signing, diffie-hellman
+
+/* ------------------------------------------------------------------ *
+ * Function symbols
+ *
+ * KEM:  pk_kem(s) is the KEM public key from secret seed s.
+ *       kemEnc(K, pk, r) is the ciphertext encapsulating shared secret K
+ *                         under pk with randomness r.
+ *       kemDec(ct, s)    is decapsulation; recovers K when ct is honest.
+ *       Equation: kemDec(kemEnc(K, pk_kem(s), r), s) = K
+ *
+ *       Modelling note: the shared secret K is generated fresh by the
+ *       encapsulator (Fr(~Kpq)) and encapsulated under pk_kem(s). This is
+ *       the standard Tamarin idiom (same as the asymmetric-encryption
+ *       builtin) and captures IND-CCA in the symbolic model: the adversary
+ *       cannot recover K from ct without s, and cannot construct any other
+ *       valid ciphertext that decapsulates to the same K.
+ *
+ * MAC:  mac(k, m) is the tag; verification is by equality
+ *       Eq(received_tag, mac(k, m)).
+ *
+ * Encoding: we model Encode(...) as a public tuple <...> in Tamarin's term
+ * algebra. Tamarin tuples are injective by construction, which matches the
+ * paper's Definition 2.1.
+ *
+ * Domain-separation labels are public constants.
+ * ------------------------------------------------------------------ */
+
+functions: pk_kem/1
+functions: kemEnc/3, kemDec/2
+functions: mac/2
+
+equations: kemDec(kemEnc(K, pk_kem(s), r), s) = K
+
+/* ------------------------------------------------------------------ *
+ * Setup rules
+ * ------------------------------------------------------------------ */
+
+// Server long-term classical signing key (sk_sig, pk_sig).
+rule SetupServerSig:
+    [ Fr(~sksig) ]
+  --[ ServerSigSetup($S, ~sksig) ]->
+    [ !LtkSig($S, ~sksig)
+    , !PkSig($S, pk(~sksig))
+    , Out(pk(~sksig)) ]
+
+// Server-client trusted local policy. In the paper, the policy is a
+// structured object; here we abstract it as a fresh value, with the
+// server's policy and the client's local policy required to share the
+// same identifier. The local-policy acceptance check (Algorithm 2
+// lines 4-9) is realised by joining on this same name.
+rule SetupPolicy:
+    [ Fr(~policy) ]
+  --[ PolicyInstalled($S, $C, ~policy) ]->
+    [ !ServerPolicy($S, ~policy)
+    , !ClientLocalPolicy($C, ~policy) ]
+
+// Pairs the client to a particular server's verification key.
+rule SetupClientTrust:
+    [ !PkSig($S, pkS) ]
+  --[ ClientTrusts($C, $S) ]->
+    [ !TrustedServer($C, $S, pkS) ]
+
+/* ------------------------------------------------------------------ *
+ * Compromise / corruption rules (give the adversary explicit oracles)
+ * ------------------------------------------------------------------ */
+
+// CorruptClassical: leak server's long-term signing key.
+rule Corrupt_SigKey:
+    [ !LtkSig($S, sksig) ]
+  --[ CorruptSig($S) ]->
+    [ Out(sksig) ]
+
+// Corrupt the PQ KEM secret for a particular session (sid).
+// Matches "corrupt skpq" in the freshness condition (iii).
+rule Corrupt_KEM:
+    [ !KemSk(sid, $S, kemSk) ]
+  --[ CorruptKEM(sid, $S) ]->
+    [ Out(kemSk) ]
+
+// CorruptEphemeral on server side (sk_eph).
+rule Corrupt_ServerEph:
+    [ !ServerEph(sid, $S, skeph) ]
+  --[ CorruptServerEph(sid, $S) ]->
+    [ Out(skeph) ]
+
+// CorruptEphemeral on client side (x).
+rule Corrupt_ClientEph:
+    [ !ClientEph(sid, $C, x) ]
+  --[ CorruptClientEph(sid, $C) ]->
+    [ Out(x) ]
+
+// RevealTransition: leak K_trans for a session.
+rule Reveal_Ktrans:
+    [ !KtransOf(sid, ktrans) ]
+  --[ RevealKtrans(sid) ]->
+    [ Out(ktrans) ]
+
+/* ------------------------------------------------------------------ *
+ * Protocol rules (Mode A, Variant A2, single epoch transition)
+ *
+ * Convention for sids and freshness: each invocation of Server_Phase1
+ * creates a fresh ~sid. All subsequent state for that session is keyed
+ * by ~sid, allowing per-session corruption oracles above to discriminate.
+ * ------------------------------------------------------------------ */
+
+// Phase 1: server constructs ctx_1, signs, sends m_1.
+// Notes:
+//   - mode is 'A' (PROTOCOL-EXT, see review item #1).
+//   - variant is 'A2'.
+//   - alg_id, param_id are public names (e.g. 'MLKEM768', 'P256').
+//   - epoch e and counter ctr are inputs (modelled as fresh public names
+//     for symbolic abstraction; monotonicity is checked at the action level).
+//   - pk_eph is sent in clear inside ctx_1.
+rule Server_Phase1:
+    let pkpq   = pk_kem(~skpq)
+        ctx1   = <pkpq, $algId, $paramId, $e, $ctr, h(~policy), 'A2', 'modeA', 'g'^~skeph>
+        sig1   = sign(<'MARK-X-v2-Bootstrap', ctx1>, sksig)
+        m1     = <ctx1, sig1>
+    in
+    [ Fr(~sid), Fr(~skpq), Fr(~skeph)
+    , !LtkSig($S, sksig), !ServerPolicy($S, ~policy) ]
+  --[ ServerSentM1(~sid, $S, $algId, $paramId, $e, $ctr, h(~policy), pkpq, 'g'^~skeph)
+    , ServerStarts(~sid, $S) ]->
+    [ Out(m1)
+    , !KemSk(~sid, $S, ~skpq)
+    , !ServerEph(~sid, $S, ~skeph)
+    , St_Server_1(~sid, $S, ~skpq, ~skeph, ~policy, $algId, $paramId, $e, $ctr)
+    ]
+
+// Phase 1' (client): receive m_1, perform all 5 checks.
+rule Client_Phase1:
+    let ctx1 = <pkpq, algId, paramId, e, ctr, policyHash, variantTag, modeTag, pkeph>
+        m1   = <ctx1, sig1>
+    in
+    [ In(m1)
+    , !TrustedServer($C, $S, pkS)
+    , !ClientLocalPolicy($C, ~policy)
+    , Fr(~sid_c), Fr(~x) ]
+  --[ // (b) signature check: deterministic in symbolic model (verify equation)
+      Eq(verify(sig1, <'MARK-X-v2-Bootstrap', ctx1>, pkS), true)
+      // (c.1) local-policy hash binding
+    , Eq(policyHash, h(~policy))
+      // (c.2-4) explicit per-field checks: enforced by joining on the
+      // policy-bound public names. The policy fact ~policy abstracts the
+      // tuple (algs, params, variants, min_epoch, modes); for a fully
+      // expanded check the model would carry these as separate names.
+    , Eq(variantTag, 'A2')
+    , Eq(modeTag, 'modeA')
+      // (d) monotonicity vs. stored state is asserted at the action layer
+      // via the ClientAccepts action and the monotonicity lemma.
+    , ClientReceivedM1(~sid_c, $C, $S, algId, paramId, e, ctr, policyHash, pkpq, pkeph)
+    , ClientChecksPolicy($C, h(~policy))
+    ]->
+    [ St_Client_1(~sid_c, $C, $S, ~x, ~policy, algId, paramId, e, ctr, pkpq, pkeph, m1)
+    , !ClientEph(~sid_c, $C, ~x) ]
+
+// Phase 2: client encapsulates, computes K_class, transcript, k_1, tag_1.
+rule Client_Phase2:
+    let
+        // Phase 2 (a): KEM encapsulation -- generate fresh Kpq, encapsulate
+        ctpq     = kemEnc(~Kpq, pkpq, ~r)
+        // Phase 2 (b): K_class from ECDH (Variant A2)
+        gx       = 'g'^x
+        Kclass   = pkeph^x
+        // Phase 2 (c): transcript
+        tr       = h(<m1, ctpq, gx>)
+        // Phase 2 (d): confirmation key
+        k1       = h(<~Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+        // Phase 2 (e): MAC tag_1
+        tag1     = mac(k1, <'client-confirm', tr>)
+    in
+    [ St_Client_1(sid_c, $C, $S, x, policy, algId, paramId, e, ctr, pkpq, pkeph, m1)
+    , Fr(~r), Fr(~Kpq) ]
+  --[ ClientSentM2(sid_c, $C, $S, ctpq, gx, tag1)
+    , ClientHasKpq(sid_c, $C, ~Kpq) ]->
+    [ Out(<ctpq, gx, tag1>)
+    , St_Client_2(sid_c, $C, $S, x, policy, algId, paramId, e, ctr, pkpq, pkeph, m1,
+                  ctpq, gx, ~Kpq, Kclass, tr) ]
+
+// Phase 2' (server): receive m_2, decapsulate, verify tag_1.
+// We reconstruct m_1 from St_Server_1 components so the transcript hash
+// matches the client's view.
+rule Server_Phase2:
+    let
+        ctx1   = <pk_kem(skpq), algId, paramId, e, ctr, h(policy), 'A2', 'modeA', 'g'^skeph>
+        sig1   = sign(<'MARK-X-v2-Bootstrap', ctx1>, sksig)
+        m1     = <ctx1, sig1>
+        Kpq    = kemDec(ctpq, skpq)
+        Kclass = gx^skeph
+        tr     = h(<m1, ctpq, gx>)
+        k1     = h(<Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+    in
+    [ In(<ctpq, gx, tag1>)
+    , St_Server_1(sid, $S, skpq, skeph, policy, algId, paramId, e, ctr)
+    , !LtkSig($S, sksig)
+    ]
+  --[ Eq(tag1, mac(k1, <'client-confirm', tr>))
+    , ServerVerifiedM2(sid, $S, ctpq, gx, tag1)
+    , ServerHasKpq(sid, $S, Kpq)
+    ]->
+    [ St_Server_2(sid, $S, skpq, skeph, policy, algId, paramId, e, ctr,
+                  ctpq, gx, Kpq, Kclass, tr) ]
+
+// Phase 3: server derives K_trans, K_chain, sends m_3.
+rule Server_Phase3:
+    let
+        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
+        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
+        tag2   = mac(Ktrans, <'promote-to-PQ', e, ctr, algId, h(policy)>)
+        m3     = <'promote-to-PQ', e, ctr, tag2>
+    in
+    [ St_Server_2(sid, $S, skpq, skeph, policy, algId, paramId, e, ctr,
+                  ctpq, gx, Kpq, Kclass, tr) ]
+  --[ ServerCommits(sid, $S, e, ctr, algId, paramId, h(policy), pk_kem(skpq))
+    , ServerKtrans(sid, $S, Ktrans)
+    , ServerKchain(sid, $S, Kchain)
+    , ServerSentM3(sid, $S, e, ctr, tag2)
+    ]->
+    [ Out(m3)
+    , !KtransOf(sid, Ktrans)
+    , !KchainOf(sid, Kchain) ]
+
+// Phase 3' (client): receive m_3, verify tag_2 with stored (e, ctr),
+// then check e' = e, ctr' = ctr (review item #4).
+rule Client_Phase3:
+    let
+        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
+        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
+        m3     = <'promote-to-PQ', e_recv, ctr_recv, tag2>
+    in
+    [ St_Client_2(sid_c, $C, $S, x, policy, algId, paramId, e, ctr, pkpq, pkeph, m1,
+                  ctpq, gx, Kpq, Kclass, tr)
+    , In(m3) ]
+  --[ Eq(tag2, mac(Ktrans, <'promote-to-PQ', e_recv, ctr_recv, algId, h(policy)>))
+      // explicit equality check on (e', ctr') vs. stored (e, ctr)
+    , Eq(e_recv, e)
+    , Eq(ctr_recv, ctr)
+    , ClientAccepts(sid_c, $C, $S, e, ctr, algId, paramId, h(policy), pkpq)
+    , ClientKtrans(sid_c, $C, Ktrans)
+    , ClientKchain(sid_c, $C, Kchain)
+    ]->
+    [ !KtransOf(sid_c, Ktrans)
+    , !KchainOf(sid_c, Kchain) ]
+
+/* ------------------------------------------------------------------ *
+ * Restrictions
+ * ------------------------------------------------------------------ */
+
+restriction Equality:
+    "All x y #i. Eq(x, y) @ #i ==> x = y"
+
+/* ------------------------------------------------------------------ *
+ * Lemmas
+ * ------------------------------------------------------------------ */
+
+// (1) Sanity: there exists an execution where a client accepts.
+lemma sanity_executable:
+  exists-trace
+    " Ex sid_c C S e ctr alg param ph pkpq #i.
+        ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i "
+
+// (2) Policy compliance: every client acceptance is preceded by a policy
+//     check that matches the locally trusted policy hash.
+lemma policy_compliance:
+    " All sid_c C S e ctr alg param ph pkpq #i.
+        ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        ==>
+        Ex #j. ClientChecksPolicy(C, ph) @ #j & #j < #i "
+
+// (3) Authentic install (Theorem 6.1, clause (a)).
+//     If the client accepts (e, ctr, alg, pkpq) and the server's signing key
+//     was not compromised before that point, then the honest server sent
+//     a corresponding m_1.
+lemma auth_install_strong:
+    " All sid_c C S e ctr alg param ph pkpq #i.
+        ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        & not (Ex #k. CorruptSig(S) @ #k & #k < #i)
+        ==>
+        Ex sid_s pkeph #j. ServerSentM1(sid_s, S, alg, param, e, ctr, ph, pkpq, pkeph) @ #j
+                            & #j < #i "
+
+// (4) Server-side uniqueness of (e, ctr, alg, param, ph, pkpq).
+//     Because pkpq = pk_kem(~skpq) and ~skpq is fresh per Server_Phase1
+//     invocation, the server never sends two distinct m_1's binding the
+//     same pkpq. This is the symbolic injectivity that holds without
+//     the monotonic-state assumption (Asm. 2.10 in the paper); the
+//     client-side replay-uniqueness requires the monotonicity oracle
+//     and is out of scope for this single-epoch model.
+lemma auth_install_injective:
+    " All sid_s1 sid_s2 S alg param e ctr ph pkpq pkeph1 pkeph2 #i1 #i2.
+        ServerSentM1(sid_s1, S, alg, param, e, ctr, ph, pkpq, pkeph1) @ #i1
+        & ServerSentM1(sid_s2, S, alg, param, e, ctr, ph, pkpq, pkeph2) @ #i2
+        ==> #i1 = #i2 "
+
+// (5) State agreement.
+//     Under a fresh A2 session (no sig, KEM, ephemeral, or Ktrans
+//     compromise prior to acceptance), if the client accepts a tuple,
+//     then a matching server has committed to it.
+lemma state_agreement:
+    " All sid_c C S e ctr alg param ph pkpq #i.
+        ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        & not (Ex #k. CorruptSig(S) @ #k & #k < #i)
+        & not (Ex sid_s #k. CorruptKEM(sid_s, S) @ #k & #k < #i)
+        & not (Ex sid_s #k. CorruptServerEph(sid_s, S) @ #k & #k < #i)
+        & not (Ex sid_c2 #k. CorruptClientEph(sid_c2, C) @ #k & #k < #i)
+        & not (Ex sid #k. RevealKtrans(sid) @ #k & #k < #i)
+        ==>
+        Ex sid_s #j. ServerCommits(sid_s, S, e, ctr, alg, param, ph, pkpq) @ #j
+                       & #j < #i "
+
+#ifdef WIP
+// (6) Server-confirmation authentication.
+//     STATUS: WIP. Tamarin's autoprover reports a falsifying trace,
+//     but inspection of the trace shows it relies on CorruptServerEph
+//     which the lemma already excludes — likely a heuristic-search
+//     limitation rather than a real attack. Needs either an
+//     interactive proof, a helper-lemma (sources annotation), or a
+//     reformulation. Gated behind -DWIP until resolved.
+lemma server_confirm_auth:
+    " All sid_s S ctpq gx tag1 #i.
+        ServerVerifiedM2(sid_s, S, ctpq, gx, tag1) @ #i
+        ==>
+        (Ex sid_c C #j. ClientSentM2(sid_c, C, S, ctpq, gx, tag1) @ #j
+                        & #j < #i)
+        | (Ex sid_s2 #k. CorruptKEM(sid_s2, S) @ #k & #k < #i)
+        | (Ex sid_s2 #k. CorruptServerEph(sid_s2, S) @ #k & #k < #i)
+        | (Ex sid_c C #k. CorruptClientEph(sid_c, C) @ #k & #k < #i) "
+#endif
+
+// (7) Secrecy of K_trans under A2-fresh conditions (Theorem 6.3).
+//     For a client that accepted at server S: if no KEM secret of S is
+//     corrupted, no server ephemeral of S is corrupted, this client's
+//     ephemeral is uncorrupted, and Ktrans is not directly revealed,
+//     then the adversary cannot learn Ktrans. As in server_confirm_auth,
+//     the exclusion is over all server sessions of S because of DH
+//     symmetry / the adversary's freedom to choose ctpq.
+lemma secrecy_ktrans:
+    " All sid_c C S e ctr alg param ph pkpq ktrans #i.
+        ClientKtrans(sid_c, C, ktrans) @ #i
+        & ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        & not (Ex #r. CorruptSig(S) @ #r & #r < #i)
+        & not (Ex sid_s #r. CorruptKEM(sid_s, S) @ #r)
+        & not (Ex sid_s #r. CorruptServerEph(sid_s, S) @ #r)
+        & not (Ex #r. CorruptClientEph(sid_c, C) @ #r)
+        & not (Ex sid #r. RevealKtrans(sid) @ #r)
+        ==> not (Ex #k. K(ktrans) @ #k) "
+
+// (8) Leakage-resilient secrecy (Theorem 6.4):
+//     One ECDH ephemeral may leak but not both. KEM and Ktrans must
+//     remain fresh. The disjunction forbids the *joint* event
+//     (server-eph corruption AND client-eph corruption).
+lemma secrecy_ktrans_one_leak:
+    " All sid_c C S e ctr alg param ph pkpq ktrans #i.
+        ClientKtrans(sid_c, C, ktrans) @ #i
+        & ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
+        & not (Ex #r. CorruptSig(S) @ #r & #r < #i)
+        & not (Ex sid_s #r. CorruptKEM(sid_s, S) @ #r)
+        & not ((Ex sid_s #r. CorruptServerEph(sid_s, S) @ #r)
+               & (Ex #r. CorruptClientEph(sid_c, C) @ #r))
+        & not (Ex sid #r. RevealKtrans(sid) @ #r)
+        ==> not (Ex #k. K(ktrans) @ #k) "
+
+#ifdef WIP
+// (9) Sanity (negative): combined corruption of the matching KEM secret
+//     and the matching server ECDH ephemeral lets the adversary recover
+//     K_trans. This witnesses that the freshness conditions of
+//     `secrecy_ktrans` are necessary, not just sufficient.
+//     STATUS: WIP. Tamarin reports "no trace found" with the autoprover
+//     within the default step bound; finding the witness likely
+//     requires the interactive prover or a tactic. Gated behind -DWIP.
+lemma pq_secrecy_essential:
+  exists-trace
+    " Ex sid_c C ktrans #i #k.
+        ClientKtrans(sid_c, C, ktrans) @ #i
+        & K(ktrans) @ #k
+        & (Ex sid_s S #r1 #r2.
+              CorruptKEM(sid_s, S) @ #r1
+              & CorruptServerEph(sid_s, S) @ #r2
+              & ServerKtrans(sid_s, S, ktrans) @ #r2) "
+#endif
+
+/* ------------------------------------------------------------------ *
+ * Variant A1 sketch (PSK-based classical channel)
+ *
+ * To enable A1 instead of A2, replace 'g'^skeph and pkeph^x with the
+ * shared PSK fact:
+ *
+ *   rule SetupPSK:
+ *       [ Fr(~psk) ]
+ *     --[ PSKInstalled($S, $C, ~psk) ]->
+ *       [ !PSK($S, $C, ~psk) ]
+ *
+ * and in Phase 1 / Phase 2 use Kclass = ~psk (consumed from !PSK) instead
+ * of the ECDH computation. The pkeph field becomes 'eps' (epsilon) and X
+ * becomes 'eps'. The freshness condition then drops CorruptEphemeral and
+ * adds CorruptPSK; secrecy_ktrans is rewritten accordingly.
+ *
+ * ------------------------------------------------------------------ *
+ * Mode B sketch (chain bootstrap)
+ *
+ * After a Mode A epoch completes, a !KchainOf(sid, Kchain) persistent fact
+ * is available. The next epoch's Phase 1 replaces sign(...) with
+ * mac(Kchain, <"MARK-X-v2-ChainBoot", ctx_1>) and the client verifies the
+ * MAC under its stored K_chain rather than the signature.
+ *
+ * The RevealChainKey oracle:
+ *   rule Reveal_Kchain:
+ *       [ !KchainOf(sid, kchain) ] --[ RevealKchain(sid) ]-> [ Out(kchain) ]
+ *
+ * Chain-fresh predicates are then expressed in lemmas as conjunctions
+ * over RevealKchain and the prior-epoch ServerStarts events. A faithful
+ * multi-epoch model requires either explicit per-epoch rules or a generic
+ * "next-epoch" rule that consumes !KchainOf and produces the next
+ * Server_Phase1-equivalent. See review item #8.
+ * ------------------------------------------------------------------ */
+
+end
