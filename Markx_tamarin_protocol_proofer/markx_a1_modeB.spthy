@@ -238,7 +238,7 @@ lemma chain_auth:
             ServerChainStep(sid_s, S, sid_prev_s) @ #j
             & #j < #i "
 
-// Theorem 6.2 / chained: secrecy of K_trans in the chained epoch.
+// Theorem 2 / chained: secrecy of K_trans in the chained epoch.
 lemma secrecy_ktrans:
     " All sid_c C S e ctr alg param ph pkpq ktrans #i.
         ClientKtrans(sid_c, C, ktrans) @ #i
