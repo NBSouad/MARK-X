@@ -1,6 +1,6 @@
 //! HKDF-SHA-256 wrappers using the domain-separated labels from §7 of
 //!  MARK-X.  Modelled as a random oracle in the proofs
-//! (Theorems 5.2--5.4 of the paper).
+//! (Theorems 2--4 of the paper).
 //!
 //! All three derivations (`k_1`, `K_trans`, `K_chain`) extract a single
 //! HKDF PRK from `K_pq ‖ K_class`, then expand under distinct info

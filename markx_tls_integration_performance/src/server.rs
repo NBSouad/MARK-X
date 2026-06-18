@@ -1,6 +1,6 @@
 //! Server-side driver for MARK-X Mode A, Variant A1 (pre-shared $K_\mathsf{class}$).
 //!
-//! Implements the server side of Construction V.I.  The
+//! Implements the server side of Construction 1.  The
 //! driver is stateful across the three messages: after sending $m_1$ it
 //! stores the tentative migration in memory; after receiving $m_2$ it
 //! verifies and emits $m_3$; on $m_3$ acknowledgement (in this in-process

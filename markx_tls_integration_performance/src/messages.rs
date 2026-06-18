@@ -1,4 +1,4 @@
-//! On-the-wire forms of `m_1`, `m_2`, `m_3` (Construction V.I).  
+//! On-the-wire forms of `m_1`, `m_2`, `m_3` (Construction 1).  
 // In a TLS deployment these would be the bodies of the new
 //! handshake messages `MarkXBootstrap`, `MarkXConfirm`, `MarkXPromote`
 //! (§7).  Here we emit them as plain byte vectors.

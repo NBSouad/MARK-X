@@ -10,7 +10,7 @@
  *     by a single setup rule SetupChainState. This is the standard
  *     Tamarin idiom for chained / ratcheted protocols (e.g. the
  *     Signal X3DH model) and matches KDF's input assumption that
- *     the prior epoch was already established under Theorem 6.1.
+ *     the prior epoch was already established under Theorem 1.
  *     Composing the full Mode A unrolling with Mode B causes the
  *     autoprover to fail to terminate on basic lemmas because the
  *     source-saturation procedure cannot bound the chain depth even

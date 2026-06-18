@@ -1,6 +1,6 @@
 //! Wire encoding for $\mathsf{ctx}_1$ and the three MARK-X messages.
 //!
-//! The encoding is the implementation realisation of Definition 3.1
+//! The encoding is the implementation realisation of Definition 1
 //! (Injective Encoding): every variable-length field is
 //! preceded by its length in a fixed number of bytes, so the byte sequence
 //! uniquely determines the tuple it encodes.

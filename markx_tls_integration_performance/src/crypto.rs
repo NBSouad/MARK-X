@@ -4,7 +4,7 @@
 //! treats $\mathsf{KEM}$ and $\Sigma$ as opaque IND-CCA and EUF-CMA secure
 //! schemes.  This module instantiates them with **real** primitives:
 //!
-//! * **PQ KEM** = ML-KEM-768 (FIPS 203) via the `pqcrypto-mlkem` crate,
+//! * **PQ KEM** = ML-KEM-768 (FIPS 203)  via the `pqcrypto-mlkem` crate,
 //!   which links to the PQClean reference C implementation.
 //! * **Classical signature** = ECDSA-P256 (FIPS 186-5) via the `p256` and
 //!   `ecdsa` crates (pure Rust, constant-time).

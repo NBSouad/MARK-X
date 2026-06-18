@@ -24,7 +24,7 @@
  *   chain_auth               -- A1 variant: chained acceptance
  *                               implies a matching server chain step, or
  *                               the prior K_chain leaked.
- *   secrecy_ktrans           -- Theorem 6.2 / chained: K_trans secret under
+ *   secrecy_ktrans           -- Theorem 2 / chained: K_trans secret under
  *                               PSK and KEM freshness in the chained epoch.
  *
  * Usage:

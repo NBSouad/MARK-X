@@ -1,7 +1,7 @@
 //! Client-side driver for MARK-X Mode A, Variant A1.
 //!
 //! Implements the client side of Construction V.I step-by-step, with
-//! every check from §V.B Phase 1 (a)--(e).  The check
+//! every check from §5.2 Phase 1 (a)--(e).  The check
 //! order is significant: signature verification first, then policy
 //! acceptance, then monotonicity against persistent state.
 //! Any failure aborts with the corresponding `MarkXError` variant.

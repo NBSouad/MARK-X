@@ -116,7 +116,7 @@ The observed total wire data (≈ 2.5 KB) matches the §VIII of
 | Crate module | Paper artefact |
 |---|---|
 | `error.rs` | Five rejection branches of Construction 1 / §7/Appendix C |
-| `policy.rs` | Definition 3.8, Equations (4)–(8), ECDH security |
+| `policy.rs` | Definition 9, Equations (4)–(8), ECDH security |
 | `state.rs` | Definition 7, Assumption 4 (software realisation) |
 | `codec.rs` | Definition 1 (Injective Encoding), §VII wire formats |
 | `kdf.rs` | §VII HKDF labels |

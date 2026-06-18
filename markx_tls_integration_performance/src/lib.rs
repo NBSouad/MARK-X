@@ -12,15 +12,15 @@
 //!
 //! | Module | Concept in paper |
 //! |---|---|
-//! | [`error`] | Rejection branches of Construction V.I |
-//! | [`policy`] | $\pi^\mathsf{local}$ (Definition 3.8) and acceptance check |
-//! | [`state`] | $\state$ (Definition 3.11), discharge of Assumption 3.13 |
-//! | [`codec`] | Injective encoding (Definition 3.1) |
+//! | [`error`] | Rejection branches of Construction 1 |
+//! | [`policy`] | $\pi^\mathsf{local}$ (Definition 9) and acceptance check |
+//! | [`state`] | $\state$ (Definition 7), discharge of Assumption 4 |
+//! | [`codec`] | Injective encoding (Definition 1) |
 //! | [`kdf`]   | HKDF labels of §7 |
 //! | [`crypto`] | ML-KEM-768 + ECDSA-P256 + SHA-256 + HMAC |
 //! | [`messages`] | Wire forms of $m_1, m_2, m_3$ (§VIII) |
-//! | [`server`] | Server-side driver of Construction V.I |
-//! | [`client`] | Client-side driver of Construction V.I (with all checks) |
+//! | [`server`] | Server-side driver of Construction 1 |
+//! | [`client`] | Client-side driver of Construction 1 (with all checks) |
 //!
 //! ## What this crate is and is not
 //!

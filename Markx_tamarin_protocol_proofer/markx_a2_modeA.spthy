@@ -72,7 +72,7 @@ builtins: hashing, signing, diffie-hellman
  *
  * Encoding: we model Encode(...) as a public tuple <...> in Tamarin's term
  * algebra. Tamarin tuples are injective by construction, which matches the
- * paper's Definition 2.1.
+ * paper's Definition 1.
  *
  * Domain-separation labels are public constants.
  * ------------------------------------------------------------------ */
@@ -397,7 +397,7 @@ lemma secrecy_ktrans:
         & not (Ex sid #r. RevealKtrans(sid) @ #r)
         ==> not (Ex #k. K(ktrans) @ #k) "
 
-// (8) Leakage-resilient secrecy (Theorem 6.4):
+// (8) Leakage-resilient secrecy (Theorem 4):
 //     One ECDH ephemeral may leak but not both. KEM and Ktrans must
 //     remain fresh. The disjunction forbids the *joint* event
 //     (server-eph corruption AND client-eph corruption).

@@ -1,5 +1,5 @@
-//! Error types covering every rejection branch of Construction V.I of
-//! MARK-X (see §V.B Phase 1 of the paper).
+//! Error types covering every rejection branch of Construction 1 of
+//! MARK-X (see §5.2 Phase 1 of the paper).
 //!
 //! Each variant corresponds to a specific check whose failure terminates the
 //! protocol with an explicit, distinguishable error. The names match the TLS
@@ -39,7 +39,7 @@ pub enum MarkXError {
     MalformedMessage,
 
     /// I/O failure when reading/writing the persistent monotonic state.
-    /// Discharges Assumption 3.13 at the implementation layer; if this
+    /// Discharges Assumption 4 at the implementation layer; if this
     /// returns the protocol MUST abort without updating any state.
     StorageError(String),
 

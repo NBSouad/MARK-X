@@ -4,7 +4,7 @@
 //!
 //! Every honest client holds an authentic copy of `MarkXPolicy` provisioned
 //! through a trust-anchor channel independent of any migration message
-//! (Assumption 3.9).  The implementation enforces:
+//! (Assumption 3).  The implementation enforces:
 //!
 //! 1. **Canonical encoding for hashing.**  `policy_hash` is computed over a
 //!    byte sequence with a fixed field order so that an honest server and
