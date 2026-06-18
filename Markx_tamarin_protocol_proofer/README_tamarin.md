@@ -13,10 +13,10 @@ self-contained Tamarin theory.
 | File                       | Variant | Mode | Lines  | Maps to paper                              |
 |----------------------------|---------|------|--------|--------------------------------------------|
 | `markx_core.spthy`         | (shared)| —    | small  | Function signature, setup, restriction.    |
-| `markx_a1_modeA.spthy`     | A1 PSK  | A    | medium | Theorems 5.1, 5.2, 5.6.                    |
-| `markx_a2_modeA.spthy`     | A2 ECDH | A    | medium | Theorems 5.1, 5.3, 5.4, 5.6.               |
-| `markx_a1_modeB.spthy`     | A1 PSK  | B    | medium | Theorems 5.2, 5.7 (A1 chained).            |
-| `markx_a2_modeB.spthy`     | A2 ECDH | B    | medium | Theorems 5.3, 5.4, 5.7 (A2 chained).       |
+| `markx_a1_modeA.spthy`     | A1 PSK  | A    | medium | Theorems 1, 2, 6.                    |
+| `markx_a2_modeA.spthy`     | A2 ECDH | A    | medium | Theorems 1, 3, 4, 6.               |
+| `markx_a1_modeB.spthy`     | A1 PSK  | B    | medium | Theorems 2, 7 (A1 chained).            |
+| `markx_a2_modeB.spthy`     | A2 ECDH | B    | medium | Theorems 3, 4, 7 (A2 chained).       |
 
 `markx_core.spthy` is a **reference-only** file containing the function
 signature, equational theory, setup rules, the sig-key corruption oracle,
@@ -31,13 +31,13 @@ The four variant files each include their own copy of this material (no
 | Lemma                       | a1_A | a2_A | a1_B | a2_B | Theorem in paper                              |
 |-----------------------------|:----:|:----:|:----:|:----:|-----------------------------------------------|
 | `sanity_executable`         |  ✓   |  ✓   |  ✓   |  ✓   | Trace existence (completeness sanity).        |
-| `policy_compliance`         |  ✓   |  ✓   |  ✓   |  ✓   | Theorem 5.1 clause (b) (local-policy).        |
-| `auth_install_strong`       |  ✓   |  ✓   |      |      | Theorem 5.1 clause (a) (signed install).      |
+| `policy_compliance`         |  ✓   |  ✓   |  ✓   |  ✓   | Theorem 1 clause (b) (local-policy).        |
+| `auth_install_strong`       |  ✓   |  ✓   |      |      | Theorem 1 clause (a) (signed install).      |
 | `auth_install_injective`    |  ✓   |  ✓   |      |      | Server-side `pkpq` uniqueness.                |
-| `state_agreement`           |  ✓   |  ✓   |      |      | Theorem 5.6 (state agreement).                |
-| `secrecy_ktrans`            |  ✓   |  ✓   |  ✓   |  ✓   | Theorem 5.2 (A1) / 5.3 (A2 no-leak).          |
-| `secrecy_ktrans_one_leak`   |      |  ✓   |      |  ✓   | Theorem 5.4 (A2 leakage-resilient).           |
-| `chain_auth`                |      |      |  ✓   |  ✓   | Theorem 5.7 (epoch-chain authenticity).       |
+| `state_agreement`           |  ✓   |  ✓   |      |      | Theorem 6 (state agreement).                |
+| `secrecy_ktrans`            |  ✓   |  ✓   |  ✓   |  ✓   | Theorem 2 (A1) / 3 (A2 no-leak).          |
+| `secrecy_ktrans_one_leak`   |      |  ✓   |      |  ✓   | Theorem 4 (A2 leakage-resilient).           |
+| `chain_auth`                |      |      |  ✓   |  ✓   | Theorem 7 (epoch-chain authenticity).       |
 
 A blank cell means the lemma does not apply to that variant (e.g. A1
 has no ECDH ephemerals, so the leakage-resilient sub-case is meaningless;
@@ -103,9 +103,9 @@ lemmas manually.
   - **Single transition per file.** Each file models *one* epoch
     transition. Mode B files cover the chained (e0 → e0+1) case where
     the prior epoch's K_chain is abstracted into a `SetupChainState`
-    rule. This abstraction matches the paper's framing of Theorem 5.7,
+    rule. This abstraction matches the paper's framing of Theorem 7,
     which assumes the prior epoch is already authenticated under
-    Theorem 5.1 — composing the full Mode A unrolling with Mode B
+    Theorem 1 — composing the full Mode A unrolling with Mode B
     causes Tamarin's source-saturation procedure to fail to terminate.
   - **Monotonicity is out of scope.** Epoch monotonicity in the paper
     is a *conditional* property (Assumption 2.10 — monotonic-state
