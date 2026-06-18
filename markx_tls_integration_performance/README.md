@@ -90,10 +90,10 @@ The observed total wire data (≈ 2.5 KB) matches the §VIII of
 | `messages` | `bootstrap_roundtrip`, `confirm_roundtrip`, `promote_roundtrip` | All three wire formats are reversible |
 | `messages` | `promote_wrong_label_rejected` | Promote-label tampering is caught |
 | `policy` | `canonical_encoding_is_stable` | Permuted construction → same hash |
-| `policy` | `accepts_happy_path` + 4 rejection tests | Equations (5)–(8) of Construction V.B |
+| `policy` | `accepts_happy_path` + 4 rejection tests | Equations (5)–(8) of Construction 1 |
 | `state` | `encode_decode_roundtrip` | Persistent state codec |
 | `state` | `corrupt_crc_rejected` | Storage integrity check |
-| `state` | `rejects_non_advancing_commit` | Monotonicity in software (Assumption 3.13) |
+| `state` | `rejects_non_advancing_commit` | Monotonicity in software (Assumption 4) |
 
 ### Integration tests (11)
 
@@ -115,10 +115,10 @@ The observed total wire data (≈ 2.5 KB) matches the §VIII of
 
 | Crate module | Paper artefact |
 |---|---|
-| `error.rs` | Five rejection branches of Construction V.I / §VII/Appendix C |
+| `error.rs` | Five rejection branches of Construction 1 / §7/Appendix C |
 | `policy.rs` | Definition 3.8, Equations (4)–(8), ECDH security |
-| `state.rs` | Definition 3.11, Assumption 3.13 (software realisation) |
-| `codec.rs` | Definition 3.1 (Injective Encoding), §VII wire formats |
+| `state.rs` | Definition 7, Assumption 4 (software realisation) |
+| `codec.rs` | Definition 1 (Injective Encoding), §VII wire formats |
 | `kdf.rs` | §VII HKDF labels |
 | `crypto.rs` | ML-KEM (FIPS 203), ECDSA (FIPS 186-5) |
 | `messages.rs` | Wire forms of m_1, m_2, m_3 |

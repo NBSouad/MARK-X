@@ -1,7 +1,7 @@
 //! Persistent monotonic migration state $\state$ (Definition 3.11 of
 //! MARK-X) is implemented as a file-backed counter.
 //!
-//! In a production deployment, Assumption 3.13 (monotonic state integrity)
+//! In a production deployment, Assumption 4 (monotonic state integrity)
 //! would be discharged by hardware: a TPM 2.0 NV counter, a Secure Enclave
 //! monotonic counter, or PSA Internal Trusted Storage on TF-M.  For the
 //! reference implementation we use a plain JSON file with strict
