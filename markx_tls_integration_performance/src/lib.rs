@@ -18,7 +18,7 @@
 //! | [`codec`] | Injective encoding (Definition 1) |
 //! | [`kdf`]   | HKDF labels of §7 |
 //! | [`crypto`] | ML-KEM-768 + ECDSA-P256 + SHA-256 + HMAC |
-//! | [`messages`] | Wire forms of $m_1, m_2, m_3$ (§VIII) |
+//! | [`messages`] | Wire forms of $m_1, m_2, m_3$ (§8) |
 //! | [`server`] | Server-side driver of Construction 1 |
 //! | [`client`] | Client-side driver of Construction 1 (with all checks) |
 //!

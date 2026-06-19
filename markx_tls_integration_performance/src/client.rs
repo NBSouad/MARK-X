@@ -47,7 +47,7 @@ impl MarkXClient {
         }
     }
 
-    /// Phase 1 (client side): run every check of Construction V.I step
+    /// Phase 1 (client side): run every check of Construction 1 step
     /// (c) on the received `m_1`.  On success, encapsulate to obtain
     /// $\mathit{ct}_\mathsf{pq}$, derive $k_1$, emit the encoded `m_2`,
     /// and store tentative state.  Does *not* yet update the persistent

@@ -19,7 +19,7 @@ pub enum MarkXError {
     PolicyMismatch,
 
     /// One of `alg_id`, `param_id`, or `variant` is not allowed under
-    /// $\pi^\mathsf{local}$ (Equations (5)--(7) of Construction V.I).
+    /// $\pi^\mathsf{local}$ (Equations (5)--(7) of Construction 1).
     /// Maps to `markx_algorithm_not_allowed(122)`.
     AlgorithmNotAllowed,
 
