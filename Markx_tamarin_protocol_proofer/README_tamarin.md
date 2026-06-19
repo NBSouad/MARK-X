@@ -108,7 +108,7 @@ lemmas manually.
     Theorem 1 — composing the full Mode A unrolling with Mode B
     causes Tamarin's source-saturation procedure to fail to terminate.
   - **Monotonicity is out of scope.** Epoch monotonicity in the paper
-    is a *conditional* property (Assumption 2.10 — monotonic-state
+    is a *conditional* property (Assumption 4 — monotonic-state
     integrity is a systems assumption, not a cryptographic one).
     Verifying it symbolically would require encoding the storage model.
   - **Policy as opaque secret.** The local policy is modelled as a
