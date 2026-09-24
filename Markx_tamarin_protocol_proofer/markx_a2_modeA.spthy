@@ -112,6 +112,54 @@ rule SetupClientTrust:
   --[ ClientTrusts($C, $S) ]->
     [ !TrustedServer($C, $S, pkS) ]
 
+// Client enrolment (Assumption: Client Enrolment).
+// The client generates a long-term static ECDH keypair; the server records
+// the public half in its registry, indexed by the client identifier $C.
+// The registry fact is what the server consults in Phase 2' -- it never
+// takes pk_C from the wire, which is exactly what makes the static term
+// an authenticator rather than a value the adversary can choose.
+
+/* ------------------------------------------------------------------ *
+ * Client local allow-list (policy acceptance)
+ * ------------------------------------------------------------------ */
+// The client's local allow-list, carried explicitly rather than collapsed
+// into "policies match by hash".
+//
+// The earlier modelling checked Eq(policyHash, h(~policy)), i.e. that the
+// server's announced policy was byte-identical to the client's.  That is a
+// STRONGER acceptance rule than the protocol imposes, so a lemma closing
+// under it did not establish the corresponding property of the protocol.
+// It is also incompatible with broadcasting one signed m_1 to a fleet and
+// with staged sunset rollout, where clients legitimately differ.
+//
+// Instead each allowed value is a persistent fact.  A rule that takes such a
+// fact as a premise can only fire when the fact exists, which is exactly
+// membership in the allow-list.  The announced policy hash is left
+// unconstrained, matching the protocol.
+rule SetupClientAllowsAlg:
+    [ ] --[ AlgAllowed($C, $algId, $paramId) ]->
+    [ !ClientAllowsAlg($C, $algId, $paramId) ]
+
+rule SetupClientAllowsVariant:
+    [ ] --[ VariantAllowed($C, $variantTag) ]->
+    [ !ClientAllowsVariant($C, $variantTag) ]
+
+// Bootstrap anchors.  A client is CLASSICALLY SUNSET exactly when this rule
+// is never instantiated with 'modeA_c' for it -- no fact, so no acceptance
+// path through a classically-anchored bootstrap, irrespective of whether
+// sigma_1 verifies.  That is the symbolic content of the claim that
+// retirement must be enforced by the receiver.
+rule SetupClientAllowsAnchor:
+    [ ] --[ AnchorAllowed($C, $modeTag) ]->
+    [ !ClientAllowsAnchor($C, $modeTag) ]
+
+rule SetupClientStatic:
+    [ Fr(~skC) ]
+  --[ ClientEnrolled($S, $C, ~skC) ]->
+    [ !ClientStatic($C, ~skC)
+    , !ClientRegistry($S, $C, 'g'^~skC)
+    , Out('g'^~skC) ]          // pk_C is public
+
 /* ------------------------------------------------------------------ *
  * Compromise / corruption rules (give the adversary explicit oracles)
  * ------------------------------------------------------------------ */
@@ -141,6 +189,13 @@ rule Corrupt_ClientEph:
   --[ CorruptClientEph(sid, $C) ]->
     [ Out(x) ]
 
+// CorruptStatic: leak the client's long-term static ECDH secret.
+// Per-client, not per-session: sk_C is long-lived.
+rule Corrupt_ClientStatic:
+    [ !ClientStatic($C, skC) ]
+  --[ CorruptClientStatic($C) ]->
+    [ Out(skC) ]
+
 // RevealTransition: leak K_trans for a session.
 rule Reveal_Ktrans:
     [ !KtransOf(sid, ktrans) ]
@@ -165,8 +220,8 @@ rule Reveal_Ktrans:
 //   - pk_eph is sent in clear inside ctx_1.
 rule Server_Phase1:
     let pkpq   = pk_kem(~skpq)
-        ctx1   = <pkpq, $algId, $paramId, $e, $ctr, h(~policy), 'A2', 'modeA', 'g'^~skeph>
-        sig1   = sign(<'MARK-X-v2-Bootstrap', ctx1>, sksig)
+        ctx1   = <pkpq, $algId, $paramId, $e, $ctr, h(~policy), 'A2', 'modeA_c', 'g'^~skeph>
+        sig1   = sign(<'MARK-X-Bootstrap', ctx1>, sksig)
         m1     = <ctx1, sig1>
     in
     [ Fr(~sid), Fr(~skpq), Fr(~skeph)
@@ -187,23 +242,27 @@ rule Client_Phase1:
     [ In(m1)
     , !TrustedServer($C, $S, pkS)
     , !ClientLocalPolicy($C, ~policy)
+    // Allow-list membership, as premises.  The announced policyHash is NOT
+    // required to equal h(~policy): see SetupClientAllowsAlg above.
+    , !ClientAllowsAlg($C, algId, paramId)
+    , !ClientAllowsVariant($C, variantTag)
+    , !ClientAllowsAnchor($C, modeTag)
     , Fr(~sid_c), Fr(~x) ]
   --[ // (b) signature check: deterministic in symbolic model (verify equation)
-      Eq(verify(sig1, <'MARK-X-v2-Bootstrap', ctx1>, pkS), true)
+      Eq(verify(sig1, <'MARK-X-Bootstrap', ctx1>, pkS), true)
       // (c.1) local-policy hash binding
-    , Eq(policyHash, h(~policy))
       // (c.2-4) explicit per-field checks: enforced by joining on the
       // policy-bound public names. The policy fact ~policy abstracts the
       // tuple (algs, params, variants, min_epoch, modes); for a fully
       // expanded check the model would carry these as separate names.
     , Eq(variantTag, 'A2')
-    , Eq(modeTag, 'modeA')
       // (d) monotonicity vs. stored state is asserted at the action layer
       // via the ClientAccepts action and the monotonicity lemma.
     , ClientReceivedM1(~sid_c, $C, $S, algId, paramId, e, ctr, policyHash, pkpq, pkeph)
-    , ClientChecksPolicy($C, h(~policy))
+    , ClientChecksPolicy($C, policyHash)
+    , ClientAcceptedAnchor(~sid_c, $C, modeTag)
     ]->
-    [ St_Client_1(~sid_c, $C, $S, ~x, ~policy, algId, paramId, e, ctr, pkpq, pkeph, m1)
+    [ St_Client_1(~sid_c, $C, $S, ~x, policyHash, algId, paramId, e, ctr, pkpq, pkeph, m1)
     , !ClientEph(~sid_c, $C, ~x) ]
 
 // Phase 2: client encapsulates, computes K_class, transcript, k_1, tag_1.
@@ -211,22 +270,25 @@ rule Client_Phase2:
     let
         // Phase 2 (a): KEM encapsulation -- generate fresh Kpq, encapsulate
         ctpq     = kemEnc(~Kpq, pkpq, ~r)
-        // Phase 2 (b): K_class from ECDH (Variant A2)
+        // Phase 2 (b): K_class from ephemeral-static ECDH (Variant A2).
+        //   term 1 (ephemeral x ephemeral) -> forward secrecy
+        //   term 2 (static   x ephemeral) -> client authentication
         gx       = 'g'^x
-        Kclass   = pkeph^x
-        // Phase 2 (c): transcript
-        tr       = h(<m1, ctpq, gx>)
+        Kclass   = h(<pkeph^x, pkeph^skC>)
+        // Phase 2 (c): transcript, now binding the client identifier
+        tr       = h(<m1, $C, ctpq, gx>)
         // Phase 2 (d): confirmation key
-        k1       = h(<~Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+        k1       = h(<~Kpq, Kclass, 'MARK-X-Phase2', tr>)
         // Phase 2 (e): MAC tag_1
         tag1     = mac(k1, <'client-confirm', tr>)
     in
-    [ St_Client_1(sid_c, $C, $S, x, policy, algId, paramId, e, ctr, pkpq, pkeph, m1)
+    [ St_Client_1(sid_c, $C, $S, x, policyHash, algId, paramId, e, ctr, pkpq, pkeph, m1)
+    , !ClientStatic($C, skC)
     , Fr(~r), Fr(~Kpq) ]
   --[ ClientSentM2(sid_c, $C, $S, ctpq, gx, tag1)
     , ClientHasKpq(sid_c, $C, ~Kpq) ]->
-    [ Out(<ctpq, gx, tag1>)
-    , St_Client_2(sid_c, $C, $S, x, policy, algId, paramId, e, ctr, pkpq, pkeph, m1,
+    [ Out(<$C, ctpq, gx, tag1>)
+    , St_Client_2(sid_c, $C, $S, x, policyHash, algId, paramId, e, ctr, pkpq, pkeph, m1,
                   ctpq, gx, ~Kpq, Kclass, tr) ]
 
 // Phase 2' (server): receive m_2, decapsulate, verify tag_1.
@@ -234,34 +296,44 @@ rule Client_Phase2:
 // matches the client's view.
 rule Server_Phase2:
     let
-        ctx1   = <pk_kem(skpq), algId, paramId, e, ctr, h(policy), 'A2', 'modeA', 'g'^skeph>
-        sig1   = sign(<'MARK-X-v2-Bootstrap', ctx1>, sksig)
+        ctx1   = <pk_kem(skpq), algId, paramId, e, ctr, h(policy), 'A2', 'modeA_c', 'g'^skeph>
+        sig1   = sign(<'MARK-X-Bootstrap', ctx1>, sksig)
         m1     = <ctx1, sig1>
         Kpq    = kemDec(ctpq, skpq)
-        Kclass = gx^skeph
-        tr     = h(<m1, ctpq, gx>)
-        k1     = h(<Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+        // K_class recomputed from the server side. The static term uses pkC
+        // taken from the REGISTRY fact, never from the incoming message.
+        Kclass = h(<gx^skeph, pkC^skeph>)
+        tr     = h(<m1, $C, ctpq, gx>)
+        k1     = h(<Kpq, Kclass, 'MARK-X-Phase2', tr>)
     in
-    [ In(<ctpq, gx, tag1>)
+    [ In(<$C, ctpq, gx, tag1>)
     , St_Server_1(sid, $S, skpq, skeph, policy, algId, paramId, e, ctr)
     , !LtkSig($S, sksig)
+    , !ClientRegistry($S, $C, pkC)      // enrolment lookup; no match => no rule instance
     ]
   --[ Eq(tag1, mac(k1, <'client-confirm', tr>))
     , ServerVerifiedM2(sid, $S, ctpq, gx, tag1)
+    , ServerAcceptedClient(sid, $S, $C, tr)
     , ServerHasKpq(sid, $S, Kpq)
     ]->
-    [ St_Server_2(sid, $S, skpq, skeph, policy, algId, paramId, e, ctr,
+    [ St_Server_2(sid, $S, $C, skpq, skeph, policy, algId, paramId, e, ctr,
                   ctpq, gx, Kpq, Kclass, tr) ]
 
 // Phase 3: server derives K_trans, K_chain, sends m_3.
 rule Server_Phase3:
     let
-        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
-        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
-        tag2   = mac(Ktrans, <'promote-to-PQ', e, ctr, algId, h(policy)>)
+        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-Trans', tr>)
+        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-Chain', tr>)
+        // Phase-3 confirmation key.  Deliberately NOT Ktrans: MACing under
+        // the tested key puts a public deterministic function of it on the
+        // wire, which breaks real-or-random transition secrecy outright.
+        // The symbolic model cannot see that break (mac/2 is one-way here),
+        // which is why the separation is enforced in the model as well.
+        k2     = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-Phase3', tr>)
+        tag2   = mac(k2, <'promote-to-PQ', e, ctr, algId, h(policy)>)
         m3     = <'promote-to-PQ', e, ctr, tag2>
     in
-    [ St_Server_2(sid, $S, skpq, skeph, policy, algId, paramId, e, ctr,
+    [ St_Server_2(sid, $S, $C, skpq, skeph, policy, algId, paramId, e, ctr,
                   ctpq, gx, Kpq, Kclass, tr) ]
   --[ ServerCommits(sid, $S, e, ctr, algId, paramId, h(policy), pk_kem(skpq))
     , ServerKtrans(sid, $S, Ktrans)
@@ -276,18 +348,19 @@ rule Server_Phase3:
 // then check e' = e, ctr' = ctr (review item #4).
 rule Client_Phase3:
     let
-        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
-        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
+        Ktrans = h(<Kpq, Kclass, e, ctr, policyHash, 'MARK-X-Trans', tr>)
+        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-Chain', tr>)
+        k2     = h(<Kpq, Kclass, e, ctr, policyHash, 'MARK-X-Phase3', tr>)
         m3     = <'promote-to-PQ', e_recv, ctr_recv, tag2>
     in
-    [ St_Client_2(sid_c, $C, $S, x, policy, algId, paramId, e, ctr, pkpq, pkeph, m1,
+    [ St_Client_2(sid_c, $C, $S, x, policyHash, algId, paramId, e, ctr, pkpq, pkeph, m1,
                   ctpq, gx, Kpq, Kclass, tr)
     , In(m3) ]
-  --[ Eq(tag2, mac(Ktrans, <'promote-to-PQ', e_recv, ctr_recv, algId, h(policy)>))
+  --[ Eq(tag2, mac(k2, <'promote-to-PQ', e_recv, ctr_recv, algId, policyHash>))
       // explicit equality check on (e', ctr') vs. stored (e, ctr)
     , Eq(e_recv, e)
     , Eq(ctr_recv, ctr)
-    , ClientAccepts(sid_c, $C, $S, e, ctr, algId, paramId, h(policy), pkpq)
+    , ClientAccepts(sid_c, $C, $S, e, ctr, algId, paramId, policyHash, pkpq)
     , ClientKtrans(sid_c, $C, Ktrans)
     , ClientKchain(sid_c, $C, Kchain)
     ]->
@@ -313,6 +386,33 @@ lemma sanity_executable:
 
 // (2) Policy compliance: every client acceptance is preceded by a policy
 //     check that matches the locally trusted policy hash.
+
+// Anchor retirement, symbolic form (paper: Classical Anchor Independence).
+//
+// A client accepts a bootstrap under anchor `mode` only if `mode` was in its
+// own allow-list.  Note what is ABSENT from the hypotheses: there is no
+// freshness condition and no restriction on CorruptSig.  The lemma therefore
+// holds even when the adversary holds sk_sig outright, which is exactly the
+// claim of the theorem -- refusal happens at the policy check, before the
+// signature can matter.
+//
+// A classically sunset client is one for which SetupClientAllowsAnchor is
+// never instantiated with 'modeA_c'.  For such a client no
+// AnchorAllowed(C, 'modeA_c') event exists, so by this lemma no
+// ClientAcceptedAnchor(_, C, 'modeA_c') event can exist either: the
+// classically-anchored path is unreachable.
+lemma anchor_retirement:
+    " All sid_c C modeTag #i.
+        ClientAcceptedAnchor(sid_c, C, modeTag) @ #i
+        ==>
+        Ex #j. AnchorAllowed(C, modeTag) @ #j & #j < #i "
+
+lemma sunset_refuses_classical:
+    " All sid_c C #i.
+        ClientAcceptedAnchor(sid_c, C, 'modeA_c') @ #i
+        ==>
+        Ex #j. AnchorAllowed(C, 'modeA_c') @ #j & #j < #i "
+
 lemma policy_compliance:
     " All sid_c C S e ctr alg param ph pkpq #i.
         ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
@@ -360,24 +460,47 @@ lemma state_agreement:
         Ex sid_s #j. ServerCommits(sid_s, S, e, ctr, alg, param, ph, pkpq) @ #j
                        & #j < #i "
 
-#ifdef WIP
-// (6) Server-confirmation authentication.
-//     STATUS: WIP. Tamarin's autoprover reports a falsifying trace,
-//     but inspection of the trace shows it relies on CorruptServerEph
-//     which the lemma already excludes — likely a heuristic-search
-//     limitation rather than a real attack. Needs either an
-//     interactive proof, a helper-lemma (sources annotation), or a
-//     reformulation. Gated behind -DWIP until resolved.
-lemma server_confirm_auth:
-    " All sid_s S ctpq gx tag1 #i.
+// (6) Client authentication (Theorem: Client Authentication).
+//
+//     HISTORY. In the ephemeral-only formulation of Variant A2 this lemma
+//     was FALSIFIED, and an earlier revision of this file dismissed the
+//     counterexample as a heuristic-search artefact. That was wrong: the
+//     trace was a genuine attack. Because Encaps(pk_pq) is public and
+//     ECDH(sk_eph, X) = ECDH(x, pk_eph) for an adversary-chosen x, any
+//     network party could produce a valid tag_1 and drive the server
+//     through a complete migration. The ephemeral-static construction
+//     (K_class = <pkeph^x, pkeph^skC>) is what makes the lemma hold: the
+//     static term cannot be computed without skC, and the server takes
+//     pk_C from !ClientRegistry rather than from the wire.
+//
+//     If the server accepted m_2 for client C, then either C really sent
+//     it, or the adversary held the material to forge it: the server
+//     ephemeral (which yields BOTH DH terms), or the client's static key
+//     together with the client's ephemeral, or the session's KEM secret.
+lemma client_auth:
+    " All sid_s S C ctpq gx tag1 #i.
         ServerVerifiedM2(sid_s, S, ctpq, gx, tag1) @ #i
+        & ServerAcceptedClient(sid_s, S, C, tr) @ #i
         ==>
-        (Ex sid_c C #j. ClientSentM2(sid_c, C, S, ctpq, gx, tag1) @ #j
+        (Ex sid_c #j. ClientSentM2(sid_c, C, S, ctpq, gx, tag1) @ #j
                         & #j < #i)
-        | (Ex sid_s2 #k. CorruptKEM(sid_s2, S) @ #k & #k < #i)
         | (Ex sid_s2 #k. CorruptServerEph(sid_s2, S) @ #k & #k < #i)
-        | (Ex sid_c C #k. CorruptClientEph(sid_c, C) @ #k & #k < #i) "
-#endif
+        | (Ex #k. CorruptClientStatic(C) @ #k & #k < #i)
+        | (Ex sid_s2 #k. CorruptKEM(sid_s2, S) @ #k & #k < #i) "
+
+// (6b) Static-key compromise alone must NOT suffice to impersonate,
+//      provided the client's ephemeral is also uncorrupted. This is the
+//      symbolic counterpart of the eCK-style corollary in the paper.
+lemma client_auth_static_only:
+    " All sid_s S C ctpq gx tag1 #i.
+        ServerVerifiedM2(sid_s, S, ctpq, gx, tag1) @ #i
+        & ServerAcceptedClient(sid_s, S, C, tr) @ #i
+        & not (Ex sid_s2 #k. CorruptServerEph(sid_s2, S) @ #k)
+        & not (Ex sid_c #k. CorruptClientEph(sid_c, C) @ #k)
+        & not (Ex sid_s2 #k. CorruptKEM(sid_s2, S) @ #k)
+        ==>
+        Ex sid_c #j. ClientSentM2(sid_c, C, S, ctpq, gx, tag1) @ #j
+                        & #j < #i "
 
 // (7) Secrecy of K_trans under A2-fresh conditions (Theorem 6.3).
 //     For a client that accepted at server S: if no KEM secret of S is
@@ -397,7 +520,7 @@ lemma secrecy_ktrans:
         & not (Ex sid #r. RevealKtrans(sid) @ #r)
         ==> not (Ex #k. K(ktrans) @ #k) "
 
-// (8) Leakage-resilient secrecy (Theorem 4):
+// (8) Leakage-resilient secrecy (Theorem 6.4):
 //     One ECDH ephemeral may leak but not both. KEM and Ktrans must
 //     remain fresh. The disjunction forbids the *joint* event
 //     (server-eph corruption AND client-eph corruption).
@@ -452,7 +575,7 @@ lemma pq_secrecy_essential:
  *
  * After a Mode A epoch completes, a !KchainOf(sid, Kchain) persistent fact
  * is available. The next epoch's Phase 1 replaces sign(...) with
- * mac(Kchain, <"MARK-X-v2-ChainBoot", ctx_1>) and the client verifies the
+ * mac(Kchain, <"MARK-X-ChainBoot", ctx_1>) and the client verifies the
  * MAC under its stored K_chain rather than the signature.
  *
  * The RevealChainKey oracle:
