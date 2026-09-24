@@ -71,6 +71,41 @@ rule SetupChainState:
  * Corruption oracles
  * ------------------------------------------------------------------ */
 
+
+/* ------------------------------------------------------------------ *
+ * Client local allow-list (policy acceptance)
+ * ------------------------------------------------------------------ */
+// The client's local allow-list, carried explicitly rather than collapsed
+// into "policies match by hash".
+//
+// The earlier modelling checked Eq(policyHash, h(~policy)), i.e. that the
+// server's announced policy was byte-identical to the client's.  That is a
+// STRONGER acceptance rule than the protocol imposes, so a lemma closing
+// under it did not establish the corresponding property of the protocol.
+// It is also incompatible with broadcasting one signed m_1 to a fleet and
+// with staged sunset rollout, where clients legitimately differ.
+//
+// Instead each allowed value is a persistent fact.  A rule that takes such a
+// fact as a premise can only fire when the fact exists, which is exactly
+// membership in the allow-list.  The announced policy hash is left
+// unconstrained, matching the protocol.
+rule SetupClientAllowsAlg:
+    [ ] --[ AlgAllowed($C, $algId, $paramId) ]->
+    [ !ClientAllowsAlg($C, $algId, $paramId) ]
+
+rule SetupClientAllowsVariant:
+    [ ] --[ VariantAllowed($C, $variantTag) ]->
+    [ !ClientAllowsVariant($C, $variantTag) ]
+
+// Bootstrap anchors.  A client is CLASSICALLY SUNSET exactly when this rule
+// is never instantiated with 'modeA_c' for it -- no fact, so no acceptance
+// path through a classically-anchored bootstrap, irrespective of whether
+// sigma_1 verifies.  That is the symbolic content of the claim that
+// retirement must be enforced by the receiver.
+rule SetupClientAllowsAnchor:
+    [ ] --[ AnchorAllowed($C, $modeTag) ]->
+    [ !ClientAllowsAnchor($C, $modeTag) ]
+
 rule Corrupt_KEM:
     [ !KemSk(sid, $S, kemSk) ]
   --[ CorruptKEM(sid, $S) ]->
@@ -98,7 +133,7 @@ rule Reveal_Kchain_Server:
 rule Server_Phase1_ChainBoot:
     let pkpq    = pk_kem(~skpq)
         ctx1    = <pkpq, $algId, $paramId, $e, $ctr, h(~policy), 'A1', 'modeB', 'eps'>
-        mac1    = mac(kchain, <'MARK-X-v2-ChainBoot', ctx1>)
+        mac1    = mac(kchain, <'MARK-X-ChainBoot', ctx1>)
         m1      = <ctx1, mac1>
     in
     [ Fr(~sid), Fr(~skpq)
@@ -117,18 +152,22 @@ rule Client_Phase1_ChainBoot:
     in
     [ In(m1)
     , !ClientLocalPolicy($C, ~policy)
+    // Allow-list membership, as premises.  The announced policyHash is NOT
+    // required to equal h(~policy): see SetupClientAllowsAlg above.
+    , !ClientAllowsAlg($C, algId, paramId)
+    , !ClientAllowsVariant($C, variantTag)
+    , !ClientAllowsAnchor($C, modeTag)
     , !PSK($S, $C, ~psk)
     , !ChainKeyClient($C, $S, sid_prev_c, kchain)
     , Fr(~sid_c) ]
-  --[ Eq(mac1, mac(kchain, <'MARK-X-v2-ChainBoot', ctx1>))
-    , Eq(policyHash, h(~policy))
+  --[ Eq(mac1, mac(kchain, <'MARK-X-ChainBoot', ctx1>))
     , Eq(variantTag, 'A1')
-    , Eq(modeTag, 'modeB')
     , Eq(pkeph, 'eps')
     , ClientReceivedM1Chain(~sid_c, $C, $S, sid_prev_c, algId, paramId, e, ctr, policyHash, pkpq, pkeph)
-    , ClientChecksPolicy($C, h(~policy))
+    , ClientChecksPolicy($C, policyHash)
+    , ClientAcceptedAnchor(~sid_c, $C, modeTag)
     , ClientChainStep(~sid_c, $C, sid_prev_c) ]->
-    [ St_Client_1(~sid_c, $C, $S, sid_prev_c, ~psk, ~policy, algId, paramId, e, ctr, pkpq, m1, kchain) ]
+    [ St_Client_1(~sid_c, $C, $S, sid_prev_c, ~psk, policyHash, algId, paramId, e, ctr, pkpq, m1, kchain) ]
 
 /* ------------------------------------------------------------------ *
  * Phases 2 and 3 (chained epoch, A1)
@@ -138,27 +177,27 @@ rule Client_Phase2:
     let
         ctpq     = kemEnc(~Kpq, pkpq, ~r)
         Kclass   = psk
-        tr       = h(<m1, ctpq, 'eps'>)
-        k1       = h(<~Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+        tr       = h(<m1, 'eps', ctpq, 'eps'>)
+        k1       = h(<~Kpq, Kclass, 'MARK-X-Phase2', tr>)
         tag1     = mac(k1, <'client-confirm', tr>)
     in
-    [ St_Client_1(sid_c, $C, $S, sid_prev_c, psk, policy, algId, paramId, e, ctr, pkpq, m1, kchain)
+    [ St_Client_1(sid_c, $C, $S, sid_prev_c, psk, policyHash, algId, paramId, e, ctr, pkpq, m1, kchain)
     , Fr(~r), Fr(~Kpq) ]
   --[ ClientSentM2(sid_c, $C, $S, ctpq, 'eps', tag1)
     , ClientHasKpq(sid_c, $C, ~Kpq) ]->
     [ Out(<ctpq, 'eps', tag1>)
-    , St_Client_2(sid_c, $C, $S, sid_prev_c, psk, policy, algId, paramId, e, ctr, pkpq, m1,
+    , St_Client_2(sid_c, $C, $S, sid_prev_c, psk, policyHash, algId, paramId, e, ctr, pkpq, m1,
                   ctpq, ~Kpq, Kclass, tr) ]
 
 rule Server_Phase2:
     let
         ctx1   = <pk_kem(skpq), algId, paramId, e, ctr, h(policy), 'A1', 'modeB', 'eps'>
-        mac1   = mac(kchain, <'MARK-X-v2-ChainBoot', ctx1>)
+        mac1   = mac(kchain, <'MARK-X-ChainBoot', ctx1>)
         m1     = <ctx1, mac1>
         Kpq    = kemDec(ctpq, skpq)
         Kclass = psk
-        tr     = h(<m1, ctpq, 'eps'>)
-        k1     = h(<Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+        tr     = h(<m1, 'eps', ctpq, 'eps'>)
+        k1     = h(<Kpq, Kclass, 'MARK-X-Phase2', tr>)
     in
     [ In(<ctpq, 'eps', tag1>)
     , St_Server_1(sid, $S, sid_prev, skpq, policy, algId, paramId, e, ctr, kchain)
@@ -174,9 +213,15 @@ rule Server_Phase2:
 
 rule Server_Phase3:
     let
-        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
-        Kchain_new = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
-        tag2   = mac(Ktrans, <'promote-to-PQ', e, ctr, algId, h(policy)>)
+        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-Trans', tr>)
+        Kchain_new = h(<Kpq, Kclass, e, ctr, 'MARK-X-Chain', tr>)
+        // Phase-3 confirmation key.  Deliberately NOT Ktrans: MACing under
+        // the tested key puts a public deterministic function of it on the
+        // wire, which breaks real-or-random transition secrecy outright.
+        // The symbolic model cannot see that break (mac/2 is one-way here),
+        // which is why the separation is enforced in the model as well.
+        k2     = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-Phase3', tr>)
+        tag2   = mac(k2, <'promote-to-PQ', e, ctr, algId, h(policy)>)
         m3     = <'promote-to-PQ', e, ctr, tag2>
     in
     [ St_Server_2(sid, $S, $C, sid_prev, skpq, psk, policy, algId, paramId, e, ctr,
@@ -190,17 +235,18 @@ rule Server_Phase3:
 
 rule Client_Phase3:
     let
-        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
-        Kchain_new = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
+        Ktrans = h(<Kpq, Kclass, e, ctr, policyHash, 'MARK-X-Trans', tr>)
+        Kchain_new = h(<Kpq, Kclass, e, ctr, 'MARK-X-Chain', tr>)
+        k2     = h(<Kpq, Kclass, e, ctr, policyHash, 'MARK-X-Phase3', tr>)
         m3     = <'promote-to-PQ', e_recv, ctr_recv, tag2>
     in
-    [ St_Client_2(sid_c, $C, $S, sid_prev_c, psk, policy, algId, paramId, e, ctr, pkpq, m1,
+    [ St_Client_2(sid_c, $C, $S, sid_prev_c, psk, policyHash, algId, paramId, e, ctr, pkpq, m1,
                   ctpq, Kpq, Kclass, tr)
     , In(m3) ]
-  --[ Eq(tag2, mac(Ktrans, <'promote-to-PQ', e_recv, ctr_recv, algId, h(policy)>))
+  --[ Eq(tag2, mac(k2, <'promote-to-PQ', e_recv, ctr_recv, algId, policyHash>))
     , Eq(e_recv, e)
     , Eq(ctr_recv, ctr)
-    , ClientAccepts(sid_c, $C, $S, e, ctr, algId, paramId, h(policy), pkpq)
+    , ClientAccepts(sid_c, $C, $S, e, ctr, algId, paramId, policyHash, pkpq)
     , ClientKtrans(sid_c, $C, Ktrans)
     , ClientKchain(sid_c, $C, Kchain_new)
     ]->
@@ -222,6 +268,33 @@ lemma sanity_executable:
     " Ex sid_c C S e ctr alg param ph pkpq #i.
         ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i "
 
+
+// Anchor retirement, symbolic form (paper: Classical Anchor Independence).
+//
+// A client accepts a bootstrap under anchor `mode` only if `mode` was in its
+// own allow-list.  Note what is ABSENT from the hypotheses: there is no
+// freshness condition and no restriction on CorruptSig.  The lemma therefore
+// holds even when the adversary holds sk_sig outright, which is exactly the
+// claim of the theorem -- refusal happens at the policy check, before the
+// signature can matter.
+//
+// A classically sunset client is one for which SetupClientAllowsAnchor is
+// never instantiated with 'modeA_c'.  For such a client no
+// AnchorAllowed(C, 'modeA_c') event exists, so by this lemma no
+// ClientAcceptedAnchor(_, C, 'modeA_c') event can exist either: the
+// classically-anchored path is unreachable.
+lemma anchor_retirement:
+    " All sid_c C modeTag #i.
+        ClientAcceptedAnchor(sid_c, C, modeTag) @ #i
+        ==>
+        Ex #j. AnchorAllowed(C, modeTag) @ #j & #j < #i "
+
+lemma sunset_refuses_classical:
+    " All sid_c C #i.
+        ClientAcceptedAnchor(sid_c, C, 'modeA_c') @ #i
+        ==>
+        Ex #j. AnchorAllowed(C, 'modeA_c') @ #j & #j < #i "
+
 lemma policy_compliance:
     " All sid_c C S e ctr alg param ph pkpq #i.
         ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
@@ -238,7 +311,7 @@ lemma chain_auth:
             ServerChainStep(sid_s, S, sid_prev_s) @ #j
             & #j < #i "
 
-// Theorem 2 / chained: secrecy of K_trans in the chained epoch.
+// Theorem 6.2 / chained: secrecy of K_trans in the chained epoch.
 lemma secrecy_ktrans:
     " All sid_c C S e ctr alg param ph pkpq ktrans #i.
         ClientKtrans(sid_c, C, ktrans) @ #i

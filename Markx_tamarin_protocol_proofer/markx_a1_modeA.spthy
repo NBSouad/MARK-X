@@ -22,12 +22,22 @@
  *   STABLE (default `--prove` run, all verify):
  *     sanity_executable        -- protocol runs to completion (exists-trace).
  *     policy_compliance        -- client only accepts policy-compliant ctx_1.
+ *     anchor_retirement        -- a bootstrap is accepted only under an anchor
+ *                                 in the client's own allow-list.  Holds with
+ *                                 NO freshness hypothesis and NO restriction on
+ *                                 CorruptSig, which is the point: refusal
+ *                                 precedes signature verification.
+ *     sunset_refuses_classical -- the same, specialised to 'modeA_c'.
  *     auth_install_strong      -- if client accepts pkpq, honest server signed it.
  *     auth_install_injective   -- server-side uniqueness of pkpq (Fr-injectivity).
  *     state_agreement          -- both parties agree on (e, ctr, alg, pkpq, ph)
  *                                 under A1-fresh sessions.
- *     secrecy_ktrans           -- K_trans is secret under A1-fresh conditions
- *                                 (Theorem 2).
+ *     secrecy_ktrans           -- K_trans is NOT DEDUCIBLE under A1-fresh
+ *                                 conditions.  NB: symbolic non-deducibility is
+ *                                 strictly weaker than the real-or-random
+ *                                 secrecy of Theorem 2; see the paper's
+ *                                 "What the model does not cover".
+ *     client_auth              -- server accepts m_2 only from the client.
  *
  *   WIP (only included with -DWIP; autoprover currently incomplete):
  *     server_confirm_auth      -- if server accepts tag_1, the client computed it.
@@ -66,6 +76,37 @@ rule SetupPolicy:
   --[ PolicyInstalled($S, $C, ~policy) ]->
     [ !ServerPolicy($S, ~policy)
     , !ClientLocalPolicy($C, ~policy) ]
+
+// The client's local allow-list, carried explicitly rather than collapsed
+// into "policies match by hash".
+//
+// The earlier modelling checked Eq(policyHash, h(~policy)), i.e. that the
+// server's announced policy was byte-identical to the client's.  That is a
+// STRONGER acceptance rule than the protocol imposes, so a lemma closing
+// under it did not establish the corresponding property of the protocol.
+// It is also incompatible with broadcasting one signed m_1 to a fleet and
+// with staged sunset rollout, where clients legitimately differ.
+//
+// Instead each allowed value is a persistent fact.  A rule that takes such a
+// fact as a premise can only fire when the fact exists, which is exactly
+// membership in the allow-list.  The announced policy hash is left
+// unconstrained, matching the protocol.
+rule SetupClientAllowsAlg:
+    [ ] --[ AlgAllowed($C, $algId, $paramId) ]->
+    [ !ClientAllowsAlg($C, $algId, $paramId) ]
+
+rule SetupClientAllowsVariant:
+    [ ] --[ VariantAllowed($C, $variantTag) ]->
+    [ !ClientAllowsVariant($C, $variantTag) ]
+
+// Bootstrap anchors.  A client is CLASSICALLY SUNSET exactly when this rule
+// is never instantiated with 'modeA_c' for it -- no fact, so no acceptance
+// path through a classically-anchored bootstrap, irrespective of whether
+// sigma_1 verifies.  That is the symbolic content of the claim that
+// retirement must be enforced by the receiver.
+rule SetupClientAllowsAnchor:
+    [ ] --[ AnchorAllowed($C, $modeTag) ]->
+    [ !ClientAllowsAnchor($C, $modeTag) ]
 
 rule SetupClientTrust:
     [ !PkSig($S, pkS) ]
@@ -111,8 +152,8 @@ rule Reveal_Ktrans:
 // In A1 the pk_eph field is the placeholder constant 'eps'.
 rule Server_Phase1:
     let pkpq   = pk_kem(~skpq)
-        ctx1   = <pkpq, $algId, $paramId, $e, $ctr, h(~policy), 'A1', 'modeA', 'eps'>
-        sig1   = sign(<'MARK-X-v2-Bootstrap', ctx1>, sksig)
+        ctx1   = <pkpq, $algId, $paramId, $e, $ctr, h(~policy), 'A1', 'modeA_c', 'eps'>
+        sig1   = sign(<'MARK-X-Bootstrap', ctx1>, sksig)
         m1     = <ctx1, sig1>
     in
     [ Fr(~sid), Fr(~skpq)
@@ -133,46 +174,50 @@ rule Client_Phase1:
     [ In(m1)
     , !TrustedServer($C, $S, pkS)
     , !ClientLocalPolicy($C, ~policy)
+    // Allow-list membership, as premises.  The announced policyHash is NOT
+    // required to equal h(~policy): see SetupClientAllowsAlg above.
+    , !ClientAllowsAlg($C, algId, paramId)
+    , !ClientAllowsVariant($C, variantTag)
+    , !ClientAllowsAnchor($C, modeTag)
     , !PSK($S, $C, ~psk)
     , Fr(~sid_c) ]
-  --[ Eq(verify(sig1, <'MARK-X-v2-Bootstrap', ctx1>, pkS), true)
-    , Eq(policyHash, h(~policy))
+  --[ Eq(verify(sig1, <'MARK-X-Bootstrap', ctx1>, pkS), true)
     , Eq(variantTag, 'A1')
-    , Eq(modeTag, 'modeA')
     , Eq(pkeph, 'eps')
     , ClientReceivedM1(~sid_c, $C, $S, algId, paramId, e, ctr, policyHash, pkpq, pkeph)
-    , ClientChecksPolicy($C, h(~policy))
+    , ClientChecksPolicy($C, policyHash)
+    , ClientAcceptedAnchor(~sid_c, $C, modeTag)
     ]->
-    [ St_Client_1(~sid_c, $C, $S, ~psk, ~policy, algId, paramId, e, ctr, pkpq, m1) ]
+    [ St_Client_1(~sid_c, $C, $S, ~psk, policyHash, algId, paramId, e, ctr, pkpq, m1) ]
 
 // Phase 2: client encapsulates, derives Kclass = ~psk, computes tag_1.
 rule Client_Phase2:
     let
         ctpq     = kemEnc(~Kpq, pkpq, ~r)
         Kclass   = psk
-        tr       = h(<m1, ctpq, 'eps'>)
-        k1       = h(<~Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+        tr       = h(<m1, 'eps', ctpq, 'eps'>)
+        k1       = h(<~Kpq, Kclass, 'MARK-X-Phase2', tr>)
         tag1     = mac(k1, <'client-confirm', tr>)
     in
-    [ St_Client_1(sid_c, $C, $S, psk, policy, algId, paramId, e, ctr, pkpq, m1)
+    [ St_Client_1(sid_c, $C, $S, psk, policyHash, algId, paramId, e, ctr, pkpq, m1)
     , Fr(~r), Fr(~Kpq) ]
   --[ ClientSentM2(sid_c, $C, $S, ctpq, 'eps', tag1)
     , ClientHasKpq(sid_c, $C, ~Kpq) ]->
     [ Out(<ctpq, 'eps', tag1>)
-    , St_Client_2(sid_c, $C, $S, psk, policy, algId, paramId, e, ctr, pkpq, m1,
+    , St_Client_2(sid_c, $C, $S, psk, policyHash, algId, paramId, e, ctr, pkpq, m1,
                   ctpq, ~Kpq, Kclass, tr) ]
 
 // Phase 2' (server): receive m_2, decapsulate, verify tag_1 using
 // the !PSK fact for the (S, C) pair that matches.
 rule Server_Phase2:
     let
-        ctx1   = <pk_kem(skpq), algId, paramId, e, ctr, h(policy), 'A1', 'modeA', 'eps'>
-        sig1   = sign(<'MARK-X-v2-Bootstrap', ctx1>, sksig)
+        ctx1   = <pk_kem(skpq), algId, paramId, e, ctr, h(policy), 'A1', 'modeA_c', 'eps'>
+        sig1   = sign(<'MARK-X-Bootstrap', ctx1>, sksig)
         m1     = <ctx1, sig1>
         Kpq    = kemDec(ctpq, skpq)
         Kclass = psk
-        tr     = h(<m1, ctpq, 'eps'>)
-        k1     = h(<Kpq, Kclass, 'MARK-X-v2-Phase2', tr>)
+        tr     = h(<m1, 'eps', ctpq, 'eps'>)
+        k1     = h(<Kpq, Kclass, 'MARK-X-Phase2', tr>)
     in
     [ In(<ctpq, 'eps', tag1>)
     , St_Server_1(sid, $S, skpq, policy, algId, paramId, e, ctr)
@@ -190,9 +235,16 @@ rule Server_Phase2:
 // Phase 3: server derives K_trans, K_chain, sends m_3.
 rule Server_Phase3:
     let
-        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
-        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
-        tag2   = mac(Ktrans, <'promote-to-PQ', e, ctr, algId, h(policy)>)
+        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-Trans', tr>)
+        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-Chain', tr>)
+        // Phase-3 confirmation key.  Deliberately NOT Ktrans: MACing under
+        // the tested key puts a public deterministic function of it on the
+        // wire, which breaks real-or-random transition secrecy outright.
+        // The symbolic model cannot see that break (mac/2 is one-way here),
+        // which is precisely why the separation is enforced in the model as
+        // well as in the paper and the implementation.
+        k2     = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-Phase3', tr>)
+        tag2   = mac(k2, <'promote-to-PQ', e, ctr, algId, h(policy)>)
         m3     = <'promote-to-PQ', e, ctr, tag2>
     in
     [ St_Server_2(sid, $S, $C, skpq, psk, policy, algId, paramId, e, ctr,
@@ -209,17 +261,18 @@ rule Server_Phase3:
 // Phase 3' (client): receive m_3, verify tag_2 with stored (e, ctr).
 rule Client_Phase3:
     let
-        Ktrans = h(<Kpq, Kclass, e, ctr, h(policy), 'MARK-X-v2-Trans', tr>)
-        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-v2-Chain', tr>)
+        Ktrans = h(<Kpq, Kclass, e, ctr, policyHash, 'MARK-X-Trans', tr>)
+        Kchain = h(<Kpq, Kclass, e, ctr, 'MARK-X-Chain', tr>)
+        k2     = h(<Kpq, Kclass, e, ctr, policyHash, 'MARK-X-Phase3', tr>)
         m3     = <'promote-to-PQ', e_recv, ctr_recv, tag2>
     in
-    [ St_Client_2(sid_c, $C, $S, psk, policy, algId, paramId, e, ctr, pkpq, m1,
+    [ St_Client_2(sid_c, $C, $S, psk, policyHash, algId, paramId, e, ctr, pkpq, m1,
                   ctpq, Kpq, Kclass, tr)
     , In(m3) ]
-  --[ Eq(tag2, mac(Ktrans, <'promote-to-PQ', e_recv, ctr_recv, algId, h(policy)>))
+  --[ Eq(tag2, mac(k2, <'promote-to-PQ', e_recv, ctr_recv, algId, policyHash>))
     , Eq(e_recv, e)
     , Eq(ctr_recv, ctr)
-    , ClientAccepts(sid_c, $C, $S, e, ctr, algId, paramId, h(policy), pkpq)
+    , ClientAccepts(sid_c, $C, $S, e, ctr, algId, paramId, policyHash, pkpq)
     , ClientKtrans(sid_c, $C, Ktrans)
     , ClientKchain(sid_c, $C, Kchain)
     ]->
@@ -248,6 +301,34 @@ lemma policy_compliance:
         ==>
         Ex #j. ClientChecksPolicy(C, ph) @ #j & #j < #i "
 
+// Anchor retirement, symbolic form (paper: Classical Anchor Independence).
+//
+// A client accepts a bootstrap under anchor `mode` only if `mode` was in its
+// own allow-list.  Note what is ABSENT from the hypotheses: there is no
+// freshness condition and no restriction on CorruptSig.  The lemma therefore
+// holds even when the adversary holds sk_sig outright, which is exactly the
+// claim of the theorem -- refusal happens at the policy check, before the
+// signature can matter.
+//
+// A classically sunset client is one for which SetupClientAllowsAnchor is
+// never instantiated with 'modeA_c'.  For such a client no
+// AnchorAllowed(C, 'modeA_c') event exists, so by this lemma no
+// ClientAcceptedAnchor(_, C, 'modeA_c') event can exist either: the
+// classically-anchored path is unreachable.
+lemma anchor_retirement:
+    " All sid_c C modeTag #i.
+        ClientAcceptedAnchor(sid_c, C, modeTag) @ #i
+        ==>
+        Ex #j. AnchorAllowed(C, modeTag) @ #j & #j < #i "
+
+// The same statement specialised to the classical anchor, stated so that the
+// mapping to the paper's theorem is unambiguous.
+lemma sunset_refuses_classical:
+    " All sid_c C #i.
+        ClientAcceptedAnchor(sid_c, C, 'modeA_c') @ #i
+        ==>
+        Ex #j. AnchorAllowed(C, 'modeA_c') @ #j & #j < #i "
+
 lemma auth_install_strong:
     " All sid_c C S e ctr alg param ph pkpq #i.
         ClientAccepts(sid_c, C, S, e, ctr, alg, param, ph, pkpq) @ #i
@@ -273,7 +354,7 @@ lemma state_agreement:
         Ex sid_s #j. ServerCommits(sid_s, S, e, ctr, alg, param, ph, pkpq) @ #j
                        & #j < #i "
 
-// Theorem 2: A1 transition secrecy.
+// Theorem 6.2: A1 transition secrecy.
 // Under PSK freshness, KEM freshness, no Ktrans reveal, K_trans is secret.
 lemma secrecy_ktrans:
     " All sid_c C S e ctr alg param ph pkpq ktrans #i.
@@ -285,22 +366,24 @@ lemma secrecy_ktrans:
         & not (Ex sid #r. RevealKtrans(sid) @ #r)
         ==> not (Ex #k. K(ktrans) @ #k) "
 
-#ifdef WIP
-// Server-confirmation authentication. Same heuristic-search difficulty
-// as the A2 file -- gated behind -DWIP.
-lemma server_confirm_auth:
-    " All sid_s S ctpq gx tag1 #i.
+// Client authentication (Theorem: Client Authentication, Variant A1).
+// In A1 the PSK is already a shared secret, so it authenticates the client
+// without any additional term: a valid tag_1 requires k_1, which requires
+// K_class = psk. The lemma therefore holds whenever the PSK and the
+// session's KEM secret are uncorrupted.
+lemma client_auth:
+    " All sid_s S C ctpq gx tag1 #i.
         ServerVerifiedM2(sid_s, S, ctpq, gx, tag1) @ #i
+        & ServerKnowsClient(sid_s, S, C) @ #i
         ==>
-        (Ex sid_c C #j. ClientSentM2(sid_c, C, S, ctpq, gx, tag1) @ #j
+        (Ex sid_c #j. ClientSentM2(sid_c, C, S, ctpq, gx, tag1) @ #j
                         & #j < #i)
-        | (Ex sid_s2 #k. CorruptKEM(sid_s2, S) @ #k & #k < #i)
-        | (Ex C #k. CorruptPSK(S, C) @ #k & #k < #i) "
-#endif
+        | (Ex #k. CorruptPSK(S, C) @ #k & #k < #i)
+        | (Ex sid_s2 #k. CorruptKEM(sid_s2, S) @ #k & #k < #i) "
 
 #ifdef WIP
 // Sanity (negative): combined KEM and PSK corruption witnesses
-// recoverability of K_trans (Theorem 2 freshness is necessary).
+// recoverability of K_trans (Theorem 6.2 freshness is necessary).
 lemma pq_secrecy_essential:
   exists-trace
     " Ex sid_c C S ktrans #i #k.
